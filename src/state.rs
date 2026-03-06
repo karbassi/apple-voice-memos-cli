@@ -1,4 +1,6 @@
-use crate::types::{ProcessedEntry, State};
+use crate::types::State;
+#[cfg(test)]
+use crate::types::ProcessedEntry;
 use std::fs;
 use std::path::Path;
 

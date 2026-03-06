@@ -1,11 +1,16 @@
 pub mod format;
+pub mod output;
 pub mod state;
 pub mod tsrp;
 pub mod types;
 
 use chrono::{Local, TimeZone, Utc};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use format::{format_duration, slugify};
+use output::{
+    build_list_entry, format_extract_human, format_extract_json, format_list_human,
+    format_list_json, format_show_human, format_show_json, ExtractResult, ExtractedFile, ShowEntry,
+};
 use rusqlite::Connection;
 use state::{load_state, save_state};
 use std::fs;
@@ -33,8 +38,18 @@ struct Cli {
     #[arg(long, default_value_os_t = default_out_dir())]
     dir: PathBuf,
 
+    /// Output format
+    #[arg(long, default_value = "human")]
+    output: OutputArg,
+
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Clone, ValueEnum)]
+enum OutputArg {
+    Human,
+    Json,
 }
 
 #[derive(Subcommand)]
@@ -212,7 +227,7 @@ fn write_transcript(out: &PathBuf, rec: &Recording, transcript: &str, method: &s
     out_path
 }
 
-fn cmd_extract(out: &PathBuf, all: bool, force: bool) {
+fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) {
     fs::create_dir_all(out).expect("failed to create output directory");
     let mut state = load_state(out);
     let recordings = get_recordings();
@@ -228,22 +243,41 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool) {
     };
 
     if to_process.is_empty() {
-        println!("All recordings already processed.");
+        if json {
+            print!(
+                "{}",
+                format_extract_json(&ExtractResult {
+                    extracted: 0,
+                    skipped: 0,
+                    needs_whisply: 0,
+                    files: vec![],
+                })
+            );
+        } else {
+            println!("All recordings already processed.");
+        }
         return;
     }
 
-    println!("Processing {} recording(s)...", to_process.len());
+    if !json {
+        println!("Processing {} recording(s)...", to_process.len());
+    }
 
-    let mut new_count = 0usize;
-    let mut skip_count = 0usize;
-    let mut whisply_needed = 0usize;
+    let mut result = ExtractResult {
+        extracted: 0,
+        skipped: 0,
+        needs_whisply: 0,
+        files: vec![],
+    };
 
     for rec in &to_process {
         let m4a = rdir.join(&rec.path);
         if !m4a.exists() {
-            let title_short: String = rec.title.chars().take(40).collect();
-            println!("  SKIP {title_short} — file not found");
-            skip_count += 1;
+            if !json {
+                let title_short: String = rec.title.chars().take(40).collect();
+                println!("  SKIP {title_short} \u{2014} file not found");
+            }
+            result.skipped += 1;
             continue;
         }
 
@@ -268,10 +302,12 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool) {
                             output: None,
                         },
                     );
-                    whisply_needed += 1;
+                    result.needs_whisply += 1;
                 } else {
-                    let title_short: String = rec.title.chars().take(40).collect();
-                    println!("  SKIP {title_short} — no transcript available");
+                    if !json {
+                        let title_short: String = rec.title.chars().take(40).collect();
+                        println!("  SKIP {title_short} \u{2014} no transcript available");
+                    }
                     state.processed.insert(
                         rec.uuid.clone(),
                         ProcessedEntry {
@@ -282,7 +318,7 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool) {
                             output: None,
                         },
                     );
-                    skip_count += 1;
+                    result.skipped += 1;
                 }
             }
             Some(ref text) => {
@@ -293,8 +329,17 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool) {
                     .unwrap()
                     .to_string_lossy()
                     .to_string();
-                let title_short: String = rec.title.chars().take(40).collect();
-                println!("  {method} {title_short} — {word_count} words → {fname}");
+                if !json {
+                    let title_short: String = rec.title.chars().take(40).collect();
+                    println!("  {method} {title_short} \u{2014} {word_count} words \u{2192} {fname}");
+                }
+                result.files.push(ExtractedFile {
+                    uuid: rec.uuid.clone(),
+                    title: rec.title.clone(),
+                    method: method.to_string(),
+                    words: word_count,
+                    file: fname.clone(),
+                });
                 state.processed.insert(
                     rec.uuid.clone(),
                     ProcessedEntry {
@@ -305,100 +350,83 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool) {
                         output: Some(fname),
                     },
                 );
-                new_count += 1;
+                result.extracted += 1;
             }
         }
     }
 
     save_state(out, &state);
-    println!(
-        "\nDone: {new_count} extracted, {skip_count} skipped, {whisply_needed} need --all for whisply"
-    );
-}
-
-fn cmd_list(out: &PathBuf) {
-    let recordings = get_recordings();
-    let state = load_state(out);
-
-    println!(
-        "{:<20} {:>8}   {:<16} {:>5}   Title",
-        "Date", "Duration", "Status", "Words"
-    );
-    println!("{}", "─".repeat(80));
-
-    for rec in &recordings {
-        let date_str = rec.date.format("%Y-%m-%d %H:%M").to_string();
-        let dur = format_duration(rec.duration);
-        let title: String = rec.title.chars().take(35).collect();
-
-        let (status, words) = match state.processed.get(&rec.uuid) {
-            Some(e) if e.method == "tsrp" || e.method == "whisply" => {
-                (format!("✓ {}", e.method), e.words.to_string())
-            }
-            Some(e) if e.method == "no-transcript" => {
-                ("○ needs --all".to_string(), "—".to_string())
-            }
-            _ => ("○ pending".to_string(), "—".to_string()),
-        };
-
-        println!("{date_str:<20} {dur:>8}   {status:<16} {words:>5}   {title}");
+    if json {
+        print!("{}", format_extract_json(&result));
+    } else {
+        println!("\n{}", format_extract_human(&result));
     }
 }
 
-fn cmd_show(out: &PathBuf, limit: usize) {
+fn cmd_list(out: &PathBuf, json: bool) {
     let recordings = get_recordings();
     let state = load_state(out);
-    let mut shown = 0usize;
 
-    for rec in &recordings {
-        let Some(entry) = state.processed.get(&rec.uuid) else {
-            continue;
-        };
-        let Some(ref fname) = entry.output else {
-            continue;
-        };
-        let path = out.join(fname);
-        let Ok(content) = fs::read_to_string(&path) else {
-            continue;
-        };
+    let entries: Vec<_> = recordings
+        .iter()
+        .map(|rec| {
+            let date_str = rec.date.format("%Y-%m-%d %H:%M").to_string();
+            build_list_entry(
+                &rec.uuid,
+                &date_str,
+                rec.duration,
+                &rec.title,
+                state.processed.get(&rec.uuid),
+            )
+        })
+        .collect();
 
-        let transcript = if content.starts_with("---") {
-            content[3..]
-                .find("---")
-                .map_or(content.as_str(), |end| content[end + 6..].trim())
-        } else {
-            content.as_str()
-        };
-
-        let date_str = rec.date.format("%Y-%m-%d %H:%M").to_string();
-        let dur = format_duration(rec.duration);
-        let word_count = transcript.split_whitespace().count();
-
-        println!("\n{}", "=".repeat(70));
-        println!(
-            "{}  ({date_str}, {dur}, {word_count} words)",
-            rec.title
-        );
-        println!("{}", "=".repeat(70));
-
-        if transcript.len() > 3000 {
-            println!("{}", &transcript[..3000]);
-            println!(
-                "\n... [{} chars truncated, see {fname}]",
-                transcript.len() - 3000
-            );
-        } else {
-            println!("{transcript}");
-        }
-
-        shown += 1;
-        if shown >= limit {
-            break;
-        }
+    if json {
+        print!("{}", format_list_json(&entries));
+    } else {
+        print!("{}", format_list_human(&entries));
     }
+}
 
-    if shown == 0 {
-        println!("No transcripts available. Run `voice-memos extract` first.");
+fn cmd_show(out: &PathBuf, limit: usize, json: bool) {
+    let recordings = get_recordings();
+    let state = load_state(out);
+
+    let entries: Vec<ShowEntry> = recordings
+        .iter()
+        .filter_map(|rec| {
+            let entry = state.processed.get(&rec.uuid)?;
+            let fname = entry.output.as_ref()?;
+            let path = out.join(fname);
+            let content = fs::read_to_string(&path).ok()?;
+
+            let transcript = if content.starts_with("---") {
+                content[3..]
+                    .find("---")
+                    .map_or(content.clone(), |end| content[end + 6..].trim().to_string())
+            } else {
+                content
+            };
+
+            let word_count = transcript.split_whitespace().count();
+            Some(ShowEntry {
+                uuid: rec.uuid.clone(),
+                date: rec.date.format("%Y-%m-%d %H:%M").to_string(),
+                duration: format_duration(rec.duration),
+                duration_secs: rec.duration,
+                title: rec.title.clone(),
+                words: word_count,
+                file: fname.clone(),
+                transcript,
+            })
+        })
+        .take(limit)
+        .collect();
+
+    if json {
+        print!("{}", format_show_json(&entries));
+    } else {
+        print!("{}", format_show_human(&entries));
     }
 }
 
@@ -480,11 +508,12 @@ fn cmd_watch(out: &PathBuf, action: &str) {
 fn main() {
     let cli = Cli::parse();
     let out = cli.dir;
+    let json = matches!(cli.output, OutputArg::Json);
 
     match cli.command {
-        Commands::Extract { all, force } => cmd_extract(&out, all, force),
-        Commands::List => cmd_list(&out),
-        Commands::Show { limit } => cmd_show(&out, limit),
+        Commands::Extract { all, force } => cmd_extract(&out, all, force, json),
+        Commands::List => cmd_list(&out, json),
+        Commands::Show { limit } => cmd_show(&out, limit, json),
         Commands::Watch { action } => cmd_watch(&out, &action),
     }
 }
