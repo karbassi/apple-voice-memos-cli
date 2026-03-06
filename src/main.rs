@@ -1,5 +1,6 @@
 pub mod format;
 pub mod output;
+pub mod schema;
 pub mod state;
 pub mod tsrp;
 pub mod types;
@@ -82,6 +83,11 @@ enum Commands {
         /// Number of transcripts to show
         #[arg(short = 'n', long, default_value_t = 5)]
         limit: usize,
+    },
+    /// Show output schema for a command (or list all commands)
+    Schema {
+        /// Command name (list, show, extract). Omit to list all.
+        command: Option<String>,
     },
     /// Manage launchd watcher
     Watch {
@@ -590,6 +596,26 @@ fn cmd_watch(out: &PathBuf, action: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_schema(command: Option<&str>) -> Result<()> {
+    match command {
+        Some(cmd) => match schema::schema_for(cmd) {
+            Some(s) => {
+                println!("{}", serde_json::to_string_pretty(&s).unwrap());
+            }
+            None => {
+                let cmds = schema::available_commands();
+                bail!("unknown command: {cmd}. Available: {}", cmds.join(", "));
+            }
+        },
+        None => {
+            let cmds = schema::available_commands();
+            let schemas: Vec<_> = cmds.iter().filter_map(|c| schema::schema_for(c)).collect();
+            println!("{}", serde_json::to_string_pretty(&schemas).unwrap());
+        }
+    }
+    Ok(())
+}
+
 fn resolve_output_format(explicit: Option<OutputArg>) -> OutputArg {
     use std::io::IsTerminal;
 
@@ -642,6 +668,7 @@ fn main() {
                 cmd_extract(&out, all, force, json, fields)
             }
         }
+        Commands::Schema { command } => cmd_schema(command.as_deref()),
         Commands::List => cmd_list(&out, json, ndjson, fields),
         Commands::Show { limit } => cmd_show(&out, limit, json, ndjson, fields),
         Commands::Watch { action } => cmd_watch(&out, &action),
