@@ -12,8 +12,8 @@ use format::{format_duration, slugify};
 use output::{
     build_list_entry, filter_json_fields, format_dry_run_human, format_dry_run_json,
     format_extract_human, format_extract_json, format_list_human, format_list_json,
-    format_show_human, format_show_json, DryRunEntry, DryRunResult, ExtractResult, ExtractedFile,
-    ShowEntry,
+    format_list_ndjson, format_show_human, format_show_json, format_show_ndjson, DryRunEntry,
+    DryRunResult, ExtractResult, ExtractedFile, ShowEntry,
 };
 use rusqlite::Connection;
 use state::{load_state, save_state};
@@ -58,6 +58,7 @@ struct Cli {
 enum OutputArg {
     Human,
     Json,
+    Ndjson,
 }
 
 #[derive(Subcommand)]
@@ -439,7 +440,7 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool, fields: &[Stri
     Ok(())
 }
 
-fn cmd_list(out: &PathBuf, json: bool, fields: &[String]) -> Result<()> {
+fn cmd_list(out: &PathBuf, json: bool, ndjson: bool, fields: &[String]) -> Result<()> {
     let recordings = get_recordings()?;
     let state = load_state(out);
 
@@ -457,7 +458,9 @@ fn cmd_list(out: &PathBuf, json: bool, fields: &[String]) -> Result<()> {
         })
         .collect();
 
-    if json {
+    if ndjson {
+        print_json(&format_list_ndjson(&entries), fields);
+    } else if json {
         print_json(&format_list_json(&entries), fields);
     } else {
         print!("{}", format_list_human(&entries));
@@ -465,7 +468,7 @@ fn cmd_list(out: &PathBuf, json: bool, fields: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn cmd_show(out: &PathBuf, limit: usize, json: bool, fields: &[String]) -> Result<()> {
+fn cmd_show(out: &PathBuf, limit: usize, json: bool, ndjson: bool, fields: &[String]) -> Result<()> {
     let recordings = get_recordings()?;
     let state = load_state(out);
 
@@ -500,7 +503,9 @@ fn cmd_show(out: &PathBuf, limit: usize, json: bool, fields: &[String]) -> Resul
         .take(limit)
         .collect();
 
-    if json {
+    if ndjson {
+        print_json(&format_show_ndjson(&entries), fields);
+    } else if json {
         print_json(&format_show_json(&entries), fields);
     } else {
         print!("{}", format_show_human(&entries));
@@ -588,7 +593,8 @@ fn cmd_watch(out: &PathBuf, action: &str) -> Result<()> {
 fn main() {
     let cli = Cli::parse();
     let out = cli.dir;
-    let json = matches!(cli.output, OutputArg::Json);
+    let json = matches!(cli.output, OutputArg::Json | OutputArg::Ndjson);
+    let ndjson = matches!(cli.output, OutputArg::Ndjson);
 
     if let Err(e) = validate::validate_output_dir(&out) {
         eprintln!("error: {e}");
@@ -609,8 +615,8 @@ fn main() {
                 cmd_extract(&out, all, force, json, fields)
             }
         }
-        Commands::List => cmd_list(&out, json, fields),
-        Commands::Show { limit } => cmd_show(&out, limit, json, fields),
+        Commands::List => cmd_list(&out, json, ndjson, fields),
+        Commands::Show { limit } => cmd_show(&out, limit, json, ndjson, fields),
         Commands::Watch { action } => cmd_watch(&out, &action),
     };
 

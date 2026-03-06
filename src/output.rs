@@ -216,6 +216,24 @@ pub fn format_extract_json(result: &ExtractResult) -> String {
     serde_json::to_string_pretty(result).unwrap()
 }
 
+pub fn format_list_ndjson(entries: &[ListEntry]) -> String {
+    entries
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
+pub fn format_show_ndjson(entries: &[ShowEntry]) -> String {
+    entries
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap())
+        .collect::<Vec<_>>()
+        .join("\n")
+        + "\n"
+}
+
 pub fn filter_json_fields(json: &str, fields: &[String]) -> String {
     if fields.is_empty() {
         return json.to_string();
@@ -525,5 +543,61 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&filtered).unwrap();
         assert_eq!(parsed["a"], 1);
         assert_eq!(parsed["b"], 2);
+    }
+
+    // --- NDJSON ---
+
+    #[test]
+    fn format_list_ndjson_one_per_line() {
+        let entries = vec![
+            ListEntry {
+                uuid: "uuid-1".to_string(),
+                date: "2024-01-15".to_string(),
+                duration: "1m00s".to_string(),
+                duration_secs: 60.0,
+                title: "A".to_string(),
+                status: "pending".to_string(),
+                method: None,
+                words: None,
+                file: None,
+            },
+            ListEntry {
+                uuid: "uuid-2".to_string(),
+                date: "2024-01-16".to_string(),
+                duration: "2m00s".to_string(),
+                duration_secs: 120.0,
+                title: "B".to_string(),
+                status: "done".to_string(),
+                method: Some("tsrp".to_string()),
+                words: Some(50),
+                file: Some("b.md".to_string()),
+            },
+        ];
+        let output = format_list_ndjson(&entries);
+        let lines: Vec<&str> = output.trim().lines().collect();
+        assert_eq!(lines.len(), 2);
+        let a: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        let b: serde_json::Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(a["uuid"], "uuid-1");
+        assert_eq!(b["uuid"], "uuid-2");
+    }
+
+    #[test]
+    fn format_show_ndjson_one_per_line() {
+        let entries = vec![ShowEntry {
+            uuid: "uuid-1".to_string(),
+            date: "2024-01-15".to_string(),
+            duration: "1m00s".to_string(),
+            duration_secs: 60.0,
+            title: "A".to_string(),
+            words: 10,
+            file: "a.md".to_string(),
+            transcript: "Hello".to_string(),
+        }];
+        let output = format_show_ndjson(&entries);
+        let lines: Vec<&str> = output.trim().lines().collect();
+        assert_eq!(lines.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(parsed["transcript"], "Hello");
     }
 }
