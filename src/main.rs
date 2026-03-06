@@ -5,6 +5,7 @@ pub mod tsrp;
 pub mod types;
 pub mod validate;
 
+use anyhow::{bail, Context, Result};
 use chrono::{Local, TimeZone, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use format::{format_duration, slugify};
@@ -83,20 +84,22 @@ enum Commands {
     },
 }
 
-fn recordings_dir() -> PathBuf {
-    dirs::home_dir().expect("no home directory").join(
-        "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings",
-    )
+fn recordings_dir() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .context("cannot determine home directory")?
+        .join("Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"))
 }
 
-fn db_path() -> PathBuf {
-    dirs::home_dir().expect("no home directory").join(DB_REL)
+fn db_path() -> Result<PathBuf> {
+    Ok(dirs::home_dir()
+        .context("cannot determine home directory")?
+        .join(DB_REL))
 }
 
-fn get_recordings() -> Vec<Recording> {
-    let src = db_path();
+fn get_recordings() -> Result<Vec<Recording>> {
+    let src = db_path()?;
     let tmp = PathBuf::from("/tmp/vm_extract.db");
-    fs::copy(&src, &tmp).expect("failed to copy database");
+    fs::copy(&src, &tmp).context("failed to copy Voice Memos database")?;
     let wal = src.with_extension("db-wal");
     if wal.exists() {
         let _ = fs::copy(&wal, tmp.with_extension("db-wal"));
@@ -106,13 +109,13 @@ fn get_recordings() -> Vec<Recording> {
         let _ = fs::copy(&shm, tmp.with_extension("db-shm"));
     }
 
-    let conn = Connection::open(&tmp).expect("failed to open database");
+    let conn = Connection::open(&tmp).context("failed to open Voice Memos database")?;
     let mut stmt = conn
         .prepare(
             "SELECT ZUNIQUEID, ZENCRYPTEDTITLE, ZPATH, ZDURATION, ZDATE, ZCUSTOMLABEL \
              FROM ZCLOUDRECORDING ORDER BY ZDATE DESC",
         )
-        .expect("failed to prepare query");
+        .context("failed to query recordings table")?;
 
     let rows = stmt
         .query_map([], |row| {
@@ -142,9 +145,9 @@ fn get_recordings() -> Vec<Recording> {
                 date: dt,
             })
         })
-        .expect("failed to query recordings");
+        .context("failed to query recordings")?;
 
-    rows.filter_map(|r| r.ok()).collect()
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 fn extract_transcript_tsrp(m4a_path: &PathBuf) -> Option<String> {
@@ -199,7 +202,12 @@ fn transcribe_whisply(m4a_path: &PathBuf) -> Option<String> {
     }
 }
 
-fn write_transcript(out: &PathBuf, rec: &Recording, transcript: &str, method: &str) -> PathBuf {
+fn write_transcript(
+    out: &PathBuf,
+    rec: &Recording,
+    transcript: &str,
+    method: &str,
+) -> Result<PathBuf> {
     let date_str = rec.date.format("%Y-%m-%d").to_string();
     let slug = slugify(&rec.title);
     let base = if slug.is_empty() {
@@ -228,14 +236,15 @@ fn write_transcript(out: &PathBuf, rec: &Recording, transcript: &str, method: &s
         rec.path,
         transcript
     );
-    fs::write(&out_path, content).expect("failed to write transcript");
-    out_path
+    fs::write(&out_path, content)
+        .with_context(|| format!("failed to write transcript: {}", out_path.display()))?;
+    Ok(out_path)
 }
 
-fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool) {
+fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool) -> Result<()> {
     let state = load_state(out);
-    let recordings = get_recordings();
-    let rdir = recordings_dir();
+    let recordings = get_recordings()?;
+    let rdir = recordings_dir()?;
 
     let to_process: Vec<&Recording> = if force {
         recordings.iter().collect()
@@ -275,13 +284,14 @@ fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool) {
     } else {
         print!("{}", format_dry_run_human(&result));
     }
+    Ok(())
 }
 
-fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) {
-    fs::create_dir_all(out).expect("failed to create output directory");
+fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) -> Result<()> {
+    fs::create_dir_all(out).context("failed to create output directory")?;
     let mut state = load_state(out);
-    let recordings = get_recordings();
-    let rdir = recordings_dir();
+    let recordings = get_recordings()?;
+    let rdir = recordings_dir()?;
 
     let to_process: Vec<&Recording> = if force {
         recordings.iter().collect()
@@ -306,7 +316,7 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) {
         } else {
             println!("All recordings already processed.");
         }
-        return;
+        return Ok(());
     }
 
     if !json {
@@ -372,7 +382,7 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) {
                 }
             }
             Some(ref text) => {
-                let out_path = write_transcript(out, rec, text, method);
+                let out_path = write_transcript(out, rec, text, method)?;
                 let word_count = text.split_whitespace().count();
                 let fname = out_path
                     .file_name()
@@ -381,7 +391,9 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) {
                     .to_string();
                 if !json {
                     let title_short: String = rec.title.chars().take(40).collect();
-                    println!("  {method} {title_short} \u{2014} {word_count} words \u{2192} {fname}");
+                    println!(
+                        "  {method} {title_short} \u{2014} {word_count} words \u{2192} {fname}"
+                    );
                 }
                 result.files.push(ExtractedFile {
                     uuid: rec.uuid.clone(),
@@ -405,16 +417,17 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) {
         }
     }
 
-    save_state(out, &state);
+    save_state(out, &state)?;
     if json {
         print!("{}", format_extract_json(&result));
     } else {
         println!("\n{}", format_extract_human(&result));
     }
+    Ok(())
 }
 
-fn cmd_list(out: &PathBuf, json: bool) {
-    let recordings = get_recordings();
+fn cmd_list(out: &PathBuf, json: bool) -> Result<()> {
+    let recordings = get_recordings()?;
     let state = load_state(out);
 
     let entries: Vec<_> = recordings
@@ -436,10 +449,11 @@ fn cmd_list(out: &PathBuf, json: bool) {
     } else {
         print!("{}", format_list_human(&entries));
     }
+    Ok(())
 }
 
-fn cmd_show(out: &PathBuf, limit: usize, json: bool) {
-    let recordings = get_recordings();
+fn cmd_show(out: &PathBuf, limit: usize, json: bool) -> Result<()> {
+    let recordings = get_recordings()?;
     let state = load_state(out);
 
     let entries: Vec<ShowEntry> = recordings
@@ -478,12 +492,13 @@ fn cmd_show(out: &PathBuf, limit: usize, json: bool) {
     } else {
         print!("{}", format_show_human(&entries));
     }
+    Ok(())
 }
 
-fn cmd_watch(out: &PathBuf, action: &str) {
-    let home = dirs::home_dir().expect("no home directory");
+fn cmd_watch(out: &PathBuf, action: &str) -> Result<()> {
+    let home = dirs::home_dir().context("cannot determine home directory")?;
     let plist_path = home.join(format!("Library/LaunchAgents/{PLIST_LABEL}.plist"));
-    let rdir = recordings_dir();
+    let rdir = recordings_dir()?;
 
     match action {
         "install" => {
@@ -518,7 +533,8 @@ fn cmd_watch(out: &PathBuf, action: &str) {
                 rdir = rdir.display(),
                 log = log_path.display(),
             );
-            fs::write(&plist_path, plist).expect("failed to write plist");
+            fs::write(&plist_path, &plist)
+                .with_context(|| format!("failed to write plist: {}", plist_path.display()))?;
             Command::new("launchctl")
                 .args(["load", &plist_path.to_string_lossy()])
                 .status()
@@ -548,11 +564,12 @@ fn cmd_watch(out: &PathBuf, action: &str) {
                         println!("Watcher not running.");
                     }
                 }
-                Err(_) => println!("Failed to check launchctl."),
+                Err(e) => bail!("failed to check launchctl: {e}"),
             }
         }
         _ => unreachable!(),
     }
+    Ok(())
 }
 
 fn main() {
@@ -565,20 +582,30 @@ fn main() {
         std::process::exit(1);
     }
 
-    match cli.command {
+    let result = match cli.command {
         Commands::Extract {
             all,
             force,
             dry_run,
         } => {
             if dry_run {
-                cmd_extract_dry_run(&out, force, json);
+                cmd_extract_dry_run(&out, force, json)
             } else {
-                cmd_extract(&out, all, force, json);
+                cmd_extract(&out, all, force, json)
             }
         }
         Commands::List => cmd_list(&out, json),
         Commands::Show { limit } => cmd_show(&out, limit, json),
         Commands::Watch { action } => cmd_watch(&out, &action),
+    };
+
+    if let Err(e) = result {
+        if json {
+            let err = serde_json::json!({"error": format!("{e:#}")});
+            eprintln!("{}", serde_json::to_string_pretty(&err).unwrap());
+        } else {
+            eprintln!("error: {e:#}");
+        }
+        std::process::exit(1);
     }
 }

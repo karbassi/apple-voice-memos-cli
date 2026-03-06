@@ -1,3 +1,4 @@
+use anyhow::{Context, Result};
 use crate::types::State;
 #[cfg(test)]
 use crate::types::ProcessedEntry;
@@ -14,10 +15,11 @@ pub fn load_state(out: &Path) -> State {
     }
 }
 
-pub fn save_state(out: &Path, state: &State) {
+pub fn save_state(out: &Path, state: &State) -> Result<()> {
     let path = out.join("state.json");
-    let data = serde_json::to_string_pretty(state).expect("failed to serialize state");
-    fs::write(&path, format!("{data}\n")).expect("failed to write state");
+    let data = serde_json::to_string_pretty(state).context("failed to serialize state")?;
+    fs::write(&path, format!("{data}\n")).context("failed to write state")?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -46,7 +48,7 @@ mod tests {
                 output: Some("2024-01-15-test-memo.md".to_string()),
             },
         );
-        save_state(dir.path(), &state);
+        save_state(dir.path(), &state).unwrap();
         let loaded = load_state(dir.path());
         assert_eq!(loaded.processed.len(), 1);
         assert_eq!(loaded.processed["abc-123"].words, 42);
@@ -63,8 +65,14 @@ mod tests {
     #[test]
     fn save_state_creates_file_with_trailing_newline() {
         let dir = TempDir::new().unwrap();
-        save_state(dir.path(), &State::default());
+        save_state(dir.path(), &State::default()).unwrap();
         let content = fs::read_to_string(dir.path().join("state.json")).unwrap();
         assert!(content.ends_with('\n'));
+    }
+
+    #[test]
+    fn save_state_returns_error_on_bad_path() {
+        let result = save_state(Path::new("/nonexistent/deeply/nested/path"), &State::default());
+        assert!(result.is_err());
     }
 }
