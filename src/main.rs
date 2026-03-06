@@ -10,9 +10,10 @@ use chrono::{Local, TimeZone, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use format::{format_duration, slugify};
 use output::{
-    build_list_entry, format_dry_run_human, format_dry_run_json, format_extract_human,
-    format_extract_json, format_list_human, format_list_json, format_show_human, format_show_json,
-    DryRunEntry, DryRunResult, ExtractResult, ExtractedFile, ShowEntry,
+    build_list_entry, filter_json_fields, format_dry_run_human, format_dry_run_json,
+    format_extract_human, format_extract_json, format_list_human, format_list_json,
+    format_show_human, format_show_json, DryRunEntry, DryRunResult, ExtractResult, ExtractedFile,
+    ShowEntry,
 };
 use rusqlite::Connection;
 use state::{load_state, save_state};
@@ -44,6 +45,10 @@ struct Cli {
     /// Output format
     #[arg(long, default_value = "human")]
     output: OutputArg,
+
+    /// Comma-separated list of fields to include in JSON output
+    #[arg(long, value_delimiter = ',')]
+    fields: Vec<String>,
 
     #[command(subcommand)]
     command: Commands,
@@ -82,6 +87,14 @@ enum Commands {
         #[arg(value_parser = ["install", "uninstall", "status"])]
         action: String,
     },
+}
+
+fn print_json(json: &str, fields: &[String]) {
+    if fields.is_empty() {
+        print!("{json}");
+    } else {
+        print!("{}", filter_json_fields(json, fields));
+    }
 }
 
 fn recordings_dir() -> Result<PathBuf> {
@@ -241,7 +254,7 @@ fn write_transcript(
     Ok(out_path)
 }
 
-fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool) -> Result<()> {
+fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool, fields: &[String]) -> Result<()> {
     let state = load_state(out);
     let recordings = get_recordings()?;
     let rdir = recordings_dir()?;
@@ -280,14 +293,14 @@ fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool) -> Result<()> {
     };
 
     if json {
-        print!("{}", format_dry_run_json(&result));
+        print_json(&format_dry_run_json(&result), fields);
     } else {
         print!("{}", format_dry_run_human(&result));
     }
     Ok(())
 }
 
-fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) -> Result<()> {
+fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool, fields: &[String]) -> Result<()> {
     fs::create_dir_all(out).context("failed to create output directory")?;
     let mut state = load_state(out);
     let recordings = get_recordings()?;
@@ -304,14 +317,14 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) -> Result<()> 
 
     if to_process.is_empty() {
         if json {
-            print!(
-                "{}",
-                format_extract_json(&ExtractResult {
+            print_json(
+                &format_extract_json(&ExtractResult {
                     extracted: 0,
                     skipped: 0,
                     needs_whisply: 0,
                     files: vec![],
-                })
+                }),
+                fields,
             );
         } else {
             println!("All recordings already processed.");
@@ -419,14 +432,14 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) -> Result<()> 
 
     save_state(out, &state)?;
     if json {
-        print!("{}", format_extract_json(&result));
+        print_json(&format_extract_json(&result), fields);
     } else {
         println!("\n{}", format_extract_human(&result));
     }
     Ok(())
 }
 
-fn cmd_list(out: &PathBuf, json: bool) -> Result<()> {
+fn cmd_list(out: &PathBuf, json: bool, fields: &[String]) -> Result<()> {
     let recordings = get_recordings()?;
     let state = load_state(out);
 
@@ -445,14 +458,14 @@ fn cmd_list(out: &PathBuf, json: bool) -> Result<()> {
         .collect();
 
     if json {
-        print!("{}", format_list_json(&entries));
+        print_json(&format_list_json(&entries), fields);
     } else {
         print!("{}", format_list_human(&entries));
     }
     Ok(())
 }
 
-fn cmd_show(out: &PathBuf, limit: usize, json: bool) -> Result<()> {
+fn cmd_show(out: &PathBuf, limit: usize, json: bool, fields: &[String]) -> Result<()> {
     let recordings = get_recordings()?;
     let state = load_state(out);
 
@@ -488,7 +501,7 @@ fn cmd_show(out: &PathBuf, limit: usize, json: bool) -> Result<()> {
         .collect();
 
     if json {
-        print!("{}", format_show_json(&entries));
+        print_json(&format_show_json(&entries), fields);
     } else {
         print!("{}", format_show_human(&entries));
     }
@@ -582,6 +595,8 @@ fn main() {
         std::process::exit(1);
     }
 
+    let fields = &cli.fields;
+
     let result = match cli.command {
         Commands::Extract {
             all,
@@ -589,13 +604,13 @@ fn main() {
             dry_run,
         } => {
             if dry_run {
-                cmd_extract_dry_run(&out, force, json)
+                cmd_extract_dry_run(&out, force, json, fields)
             } else {
-                cmd_extract(&out, all, force, json)
+                cmd_extract(&out, all, force, json, fields)
             }
         }
-        Commands::List => cmd_list(&out, json),
-        Commands::Show { limit } => cmd_show(&out, limit, json),
+        Commands::List => cmd_list(&out, json, fields),
+        Commands::Show { limit } => cmd_show(&out, limit, json, fields),
         Commands::Watch { action } => cmd_watch(&out, &action),
     };
 

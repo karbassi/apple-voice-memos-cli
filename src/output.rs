@@ -216,6 +216,43 @@ pub fn format_extract_json(result: &ExtractResult) -> String {
     serde_json::to_string_pretty(result).unwrap()
 }
 
+pub fn filter_json_fields(json: &str, fields: &[String]) -> String {
+    if fields.is_empty() {
+        return json.to_string();
+    }
+
+    let val: serde_json::Value = serde_json::from_str(json).unwrap();
+
+    let filter_obj = |obj: &serde_json::Map<String, serde_json::Value>| -> serde_json::Value {
+        let filtered: serde_json::Map<String, serde_json::Value> = obj
+            .iter()
+            .filter(|(k, _)| fields.iter().any(|f| f == *k))
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        serde_json::Value::Object(filtered)
+    };
+
+    let result = match val {
+        serde_json::Value::Array(arr) => {
+            let filtered: Vec<serde_json::Value> = arr
+                .iter()
+                .map(|item| {
+                    if let Some(obj) = item.as_object() {
+                        filter_obj(obj)
+                    } else {
+                        item.clone()
+                    }
+                })
+                .collect();
+            serde_json::Value::Array(filtered)
+        }
+        serde_json::Value::Object(ref obj) => filter_obj(obj),
+        other => other,
+    };
+
+    serde_json::to_string_pretty(&result).unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,5 +494,36 @@ mod tests {
         };
         let output = format_dry_run_human(&result);
         assert!(output.contains("needs whisply"));
+    }
+
+    // --- filter_json_fields ---
+
+    #[test]
+    fn filter_json_fields_array() {
+        let json = r#"[{"uuid":"1","title":"A","date":"2024-01-15","words":42}]"#;
+        let filtered = filter_json_fields(json, &["title".to_string(), "words".to_string()]);
+        let parsed: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+        assert_eq!(parsed[0]["title"], "A");
+        assert_eq!(parsed[0]["words"], 42);
+        assert!(parsed[0].get("uuid").is_none());
+        assert!(parsed[0].get("date").is_none());
+    }
+
+    #[test]
+    fn filter_json_fields_object() {
+        let json = r#"{"extracted":2,"skipped":1,"files":[]}"#;
+        let filtered = filter_json_fields(json, &["extracted".to_string()]);
+        let parsed: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+        assert_eq!(parsed["extracted"], 2);
+        assert!(parsed.get("skipped").is_none());
+    }
+
+    #[test]
+    fn filter_json_fields_empty_fields_returns_all() {
+        let json = r#"{"a":1,"b":2}"#;
+        let filtered = filter_json_fields(json, &[]);
+        let parsed: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+        assert_eq!(parsed["a"], 1);
+        assert_eq!(parsed["b"], 2);
     }
 }
