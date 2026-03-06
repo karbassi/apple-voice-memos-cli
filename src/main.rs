@@ -3,6 +3,7 @@ pub mod output;
 pub mod state;
 pub mod tsrp;
 pub mod types;
+pub mod validate;
 
 use chrono::{Local, TimeZone, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -509,6 +510,11 @@ fn main() {
     let cli = Cli::parse();
     let out = cli.dir;
     let json = matches!(cli.output, OutputArg::Json);
+
+    if let Err(e) = validate::validate_output_dir(&out) {
+        eprintln!("error: {e}");
+        std::process::exit(1);
+    }
 
     match cli.command {
         Commands::Extract { all, force } => cmd_extract(&out, all, force, json),
