@@ -42,9 +42,9 @@ struct Cli {
     #[arg(long, default_value_os_t = default_out_dir())]
     dir: PathBuf,
 
-    /// Output format
-    #[arg(long, default_value = "human")]
-    output: OutputArg,
+    /// Output format [env: OUTPUT_FORMAT=] [default: ndjson when piped, human otherwise]
+    #[arg(long)]
+    output: Option<OutputArg>,
 
     /// Comma-separated list of fields to include in JSON output
     #[arg(long, value_delimiter = ',')]
@@ -590,11 +590,38 @@ fn cmd_watch(out: &PathBuf, action: &str) -> Result<()> {
     Ok(())
 }
 
+fn resolve_output_format(explicit: Option<OutputArg>) -> OutputArg {
+    use std::io::IsTerminal;
+
+    // 1. Explicit --output flag wins
+    if let Some(arg) = explicit {
+        return arg;
+    }
+
+    // 2. OUTPUT_FORMAT env var
+    if let Ok(val) = std::env::var("OUTPUT_FORMAT") {
+        return match val.to_lowercase().as_str() {
+            "json" => OutputArg::Json,
+            "ndjson" => OutputArg::Ndjson,
+            "human" => OutputArg::Human,
+            _ => OutputArg::Human,
+        };
+    }
+
+    // 3. NDJSON when stdout is not a TTY (piped)
+    if !std::io::stdout().is_terminal() {
+        return OutputArg::Ndjson;
+    }
+
+    OutputArg::Human
+}
+
 fn main() {
     let cli = Cli::parse();
     let out = cli.dir;
-    let json = matches!(cli.output, OutputArg::Json | OutputArg::Ndjson);
-    let ndjson = matches!(cli.output, OutputArg::Ndjson);
+    let output = resolve_output_format(cli.output);
+    let json = matches!(output, OutputArg::Json | OutputArg::Ndjson);
+    let ndjson = matches!(output, OutputArg::Ndjson);
 
     if let Err(e) = validate::validate_output_dir(&out) {
         eprintln!("error: {e}");
