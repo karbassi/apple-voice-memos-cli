@@ -1,11 +1,18 @@
+pub mod format;
+pub mod state;
+pub mod tsrp;
+pub mod types;
+
 use chrono::{Local, TimeZone, Utc};
 use clap::{Parser, Subcommand};
+use format::{format_duration, slugify};
 use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use state::{load_state, save_state};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use tsrp::{find_tsrp, parse_tsrp};
+use types::{ProcessedEntry, Recording};
 
 const DB_REL: &str =
     "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db";
@@ -56,29 +63,6 @@ enum Commands {
     },
 }
 
-#[derive(Debug)]
-struct Recording {
-    uuid: String,
-    title: String,
-    path: String,
-    duration: f64,
-    date: chrono::DateTime<Local>,
-}
-
-#[derive(Serialize, Deserialize, Default)]
-struct State {
-    processed: HashMap<String, ProcessedEntry>,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
-struct ProcessedEntry {
-    date: String,
-    title: String,
-    method: String,
-    words: usize,
-    output: Option<String>,
-}
-
 fn recordings_dir() -> PathBuf {
     dirs::home_dir().expect("no home directory").join(
         "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings",
@@ -87,50 +71,6 @@ fn recordings_dir() -> PathBuf {
 
 fn db_path() -> PathBuf {
     dirs::home_dir().expect("no home directory").join(DB_REL)
-}
-
-fn slugify(title: &str) -> String {
-    let s: String = title
-        .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
-                c
-            } else {
-                ' '
-            }
-        })
-        .collect();
-    let slug: String = s.split_whitespace().collect::<Vec<_>>().join("-");
-    slug.chars().take(60).collect()
-}
-
-fn format_duration(seconds: f64) -> String {
-    let total = seconds as u64;
-    let s = total % 60;
-    let m = (total / 60) % 60;
-    let h = total / 3600;
-    if h > 0 {
-        format!("{h}h{m:02}m{s:02}s")
-    } else {
-        format!("{m}m{s:02}s")
-    }
-}
-
-fn load_state(out: &PathBuf) -> State {
-    let path = out.join("state.json");
-    if path.exists() {
-        let data = fs::read_to_string(&path).unwrap_or_default();
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        State::default()
-    }
-}
-
-fn save_state(out: &PathBuf, state: &State) {
-    let path = out.join("state.json");
-    let data = serde_json::to_string_pretty(state).expect("failed to serialize state");
-    fs::write(&path, format!("{data}\n")).expect("failed to write state");
 }
 
 fn get_recordings() -> Vec<Recording> {
@@ -185,42 +125,6 @@ fn get_recordings() -> Vec<Recording> {
         .expect("failed to query recordings");
 
     rows.filter_map(|r| r.ok()).collect()
-}
-
-fn find_tsrp(data: &[u8]) -> Option<&[u8]> {
-    let marker = b"tsrp";
-    let idx = data.windows(4).position(|w| w == marker)?;
-    if idx < 4 {
-        return None;
-    }
-    let atom_start = idx - 4;
-    let size =
-        u32::from_be_bytes(data[atom_start..atom_start + 4].try_into().ok()?) as usize;
-    if size < 8 || atom_start + size > data.len() {
-        return None;
-    }
-    Some(&data[idx + 4..atom_start + size])
-}
-
-fn parse_tsrp(payload: &[u8]) -> Option<String> {
-    let val: serde_json::Value = serde_json::from_slice(payload).ok()?;
-    let obj = val.as_object()?;
-    let astr = obj.get("attributedString")?;
-
-    let runs = match astr {
-        serde_json::Value::Object(map) => map.get("runs")?.as_array()?,
-        serde_json::Value::Array(arr) => arr,
-        _ => return None,
-    };
-
-    let text: String = runs.iter().filter_map(|r| r.as_str()).collect();
-
-    let trimmed = text.trim().to_string();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed)
-    }
 }
 
 fn extract_transcript_tsrp(m4a_path: &PathBuf) -> Option<String> {

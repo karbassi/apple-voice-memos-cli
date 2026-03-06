@@ -1,0 +1,10 @@
+{
+  "deny": [
+    "Bash(command:*Library/Group Containers/group.com.apple.VoiceMemos*)",
+    "Bash(command:*CloudRecordings*)",
+    "Read(file_path:*Library/Group Containers/group.com.apple.VoiceMemos*)",
+    "Read(file_path:*CloudRecordings*)",
+    "Edit(file_path:*Library/Group Containers/group.com.apple.VoiceMemos*)",
+    "Write(file_path:*Library/Group Containers/group.com.apple.VoiceMemos*)"
+  ]
+}
