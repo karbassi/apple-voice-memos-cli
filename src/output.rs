@@ -59,6 +59,36 @@ pub struct ExtractedFile {
     pub file: String,
 }
 
+#[derive(Serialize)]
+pub struct DryRunResult {
+    pub total: usize,
+    pub recordings: Vec<DryRunEntry>,
+}
+
+#[derive(Serialize)]
+pub struct DryRunEntry {
+    pub uuid: String,
+    pub title: String,
+    pub date: String,
+    pub duration: String,
+    pub has_tsrp: bool,
+}
+
+pub fn format_dry_run_human(result: &DryRunResult) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    writeln!(out, "Dry run: {} recording(s) would be processed\n", result.total).unwrap();
+    for e in &result.recordings {
+        let tsrp_status = if e.has_tsrp { "tsrp available" } else { "needs whisply" };
+        writeln!(out, "  {} {} ({}, {})", e.date, e.title, e.duration, tsrp_status).unwrap();
+    }
+    out
+}
+
+pub fn format_dry_run_json(result: &DryRunResult) -> String {
+    serde_json::to_string_pretty(result).unwrap()
+}
+
 pub fn build_list_entry(
     uuid: &str,
     date: &str,
@@ -363,5 +393,69 @@ mod tests {
         assert!(output.contains("2 extracted"));
         assert!(output.contains("1 skipped"));
         assert!(output.contains("3 need --all"));
+    }
+
+    // --- dry run ---
+
+    #[test]
+    fn format_dry_run_json_valid() {
+        let result = DryRunResult {
+            total: 2,
+            recordings: vec![
+                DryRunEntry {
+                    uuid: "uuid-1".to_string(),
+                    title: "Memo A".to_string(),
+                    date: "2024-01-15 10:30".to_string(),
+                    duration: "2m05s".to_string(),
+                    has_tsrp: true,
+                },
+                DryRunEntry {
+                    uuid: "uuid-2".to_string(),
+                    title: "Memo B".to_string(),
+                    date: "2024-01-16 11:00".to_string(),
+                    duration: "5m30s".to_string(),
+                    has_tsrp: false,
+                },
+            ],
+        };
+        let json = format_dry_run_json(&result);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["total"], 2);
+        assert_eq!(parsed["recordings"][0]["has_tsrp"], true);
+        assert_eq!(parsed["recordings"][1]["has_tsrp"], false);
+    }
+
+    #[test]
+    fn format_dry_run_human_shows_count() {
+        let result = DryRunResult {
+            total: 1,
+            recordings: vec![DryRunEntry {
+                uuid: "uuid-1".to_string(),
+                title: "Test Memo".to_string(),
+                date: "2024-01-15 10:30".to_string(),
+                duration: "1m00s".to_string(),
+                has_tsrp: true,
+            }],
+        };
+        let output = format_dry_run_human(&result);
+        assert!(output.contains("1 recording(s) would be processed"));
+        assert!(output.contains("Test Memo"));
+        assert!(output.contains("tsrp available"));
+    }
+
+    #[test]
+    fn format_dry_run_human_shows_needs_whisply() {
+        let result = DryRunResult {
+            total: 1,
+            recordings: vec![DryRunEntry {
+                uuid: "uuid-1".to_string(),
+                title: "No Tsrp".to_string(),
+                date: "2024-01-15 10:30".to_string(),
+                duration: "3m00s".to_string(),
+                has_tsrp: false,
+            }],
+        };
+        let output = format_dry_run_human(&result);
+        assert!(output.contains("needs whisply"));
     }
 }

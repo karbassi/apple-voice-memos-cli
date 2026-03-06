@@ -9,8 +9,9 @@ use chrono::{Local, TimeZone, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use format::{format_duration, slugify};
 use output::{
-    build_list_entry, format_extract_human, format_extract_json, format_list_human,
-    format_list_json, format_show_human, format_show_json, ExtractResult, ExtractedFile, ShowEntry,
+    build_list_entry, format_dry_run_human, format_dry_run_json, format_extract_human,
+    format_extract_json, format_list_human, format_list_json, format_show_human, format_show_json,
+    DryRunEntry, DryRunResult, ExtractResult, ExtractedFile, ShowEntry,
 };
 use rusqlite::Connection;
 use state::{load_state, save_state};
@@ -63,6 +64,9 @@ enum Commands {
         /// Re-process all recordings
         #[arg(long)]
         force: bool,
+        /// Preview what would be processed without writing files
+        #[arg(long)]
+        dry_run: bool,
     },
     /// List all recordings and their status
     List,
@@ -226,6 +230,51 @@ fn write_transcript(out: &PathBuf, rec: &Recording, transcript: &str, method: &s
     );
     fs::write(&out_path, content).expect("failed to write transcript");
     out_path
+}
+
+fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool) {
+    let state = load_state(out);
+    let recordings = get_recordings();
+    let rdir = recordings_dir();
+
+    let to_process: Vec<&Recording> = if force {
+        recordings.iter().collect()
+    } else {
+        recordings
+            .iter()
+            .filter(|r| !state.processed.contains_key(&r.uuid))
+            .collect()
+    };
+
+    let entries: Vec<DryRunEntry> = to_process
+        .iter()
+        .filter_map(|rec| {
+            let m4a = rdir.join(&rec.path);
+            if !m4a.exists() {
+                return None;
+            }
+            let data = fs::read(&m4a).ok()?;
+            let has_tsrp = find_tsrp(&data).is_some();
+            Some(DryRunEntry {
+                uuid: rec.uuid.clone(),
+                title: rec.title.clone(),
+                date: rec.date.format("%Y-%m-%d %H:%M").to_string(),
+                duration: format_duration(rec.duration),
+                has_tsrp,
+            })
+        })
+        .collect();
+
+    let result = DryRunResult {
+        total: entries.len(),
+        recordings: entries,
+    };
+
+    if json {
+        print!("{}", format_dry_run_json(&result));
+    } else {
+        print!("{}", format_dry_run_human(&result));
+    }
 }
 
 fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool) {
@@ -517,7 +566,17 @@ fn main() {
     }
 
     match cli.command {
-        Commands::Extract { all, force } => cmd_extract(&out, all, force, json),
+        Commands::Extract {
+            all,
+            force,
+            dry_run,
+        } => {
+            if dry_run {
+                cmd_extract_dry_run(&out, force, json);
+            } else {
+                cmd_extract(&out, all, force, json);
+            }
+        }
         Commands::List => cmd_list(&out, json),
         Commands::Show { limit } => cmd_show(&out, limit, json),
         Commands::Watch { action } => cmd_watch(&out, &action),
