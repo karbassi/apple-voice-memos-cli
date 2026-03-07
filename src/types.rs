@@ -8,6 +8,8 @@ pub struct Recording {
     pub path: String,
     pub duration: f64,
     pub date: chrono::DateTime<chrono::Local>,
+    pub folder: Option<String>,
+    pub evicted: bool,
 }
 
 #[derive(Serialize, Deserialize, Default)]

@@ -30,6 +30,8 @@ pub fn schema_for(command: &str) -> Option<CommandSchema> {
                 FieldDef { name: "method", r#type: "string", nullable: true, description: "Transcription method used: tsrp or whisply" },
                 FieldDef { name: "words", r#type: "integer", nullable: true, description: "Word count of transcript" },
                 FieldDef { name: "file", r#type: "string", nullable: true, description: "Output filename" },
+                FieldDef { name: "folder", r#type: "string", nullable: true, description: "Folder name, if assigned" },
+                FieldDef { name: "evicted", r#type: "boolean", nullable: false, description: "True if file is iCloud-only (evicted from local storage)" },
             ],
         }),
         "show" => Some(CommandSchema {
@@ -44,6 +46,7 @@ pub fn schema_for(command: &str) -> Option<CommandSchema> {
                 FieldDef { name: "words", r#type: "integer", nullable: false, description: "Word count" },
                 FieldDef { name: "file", r#type: "string", nullable: false, description: "Output filename" },
                 FieldDef { name: "transcript", r#type: "string", nullable: false, description: "Full transcript text" },
+                FieldDef { name: "folder", r#type: "string", nullable: true, description: "Folder name, if assigned" },
             ],
         }),
         "extract" => Some(CommandSchema {
@@ -52,6 +55,7 @@ pub fn schema_for(command: &str) -> Option<CommandSchema> {
             output_fields: vec![
                 FieldDef { name: "extracted", r#type: "integer", nullable: false, description: "Number of recordings successfully transcribed" },
                 FieldDef { name: "skipped", r#type: "integer", nullable: false, description: "Number of recordings skipped" },
+                FieldDef { name: "evicted", r#type: "integer", nullable: false, description: "Number of iCloud-only recordings skipped" },
                 FieldDef { name: "needs_whisply", r#type: "integer", nullable: false, description: "Number needing --all for whisply fallback" },
                 FieldDef { name: "files", r#type: "array", nullable: false, description: "List of extracted files with uuid, title, method, words, file" },
             ],
@@ -121,6 +125,29 @@ mod tests {
         assert!(first.get("type").is_some());
         assert!(first.get("nullable").is_some());
         assert!(first.get("description").is_some());
+    }
+
+    #[test]
+    fn schema_list_has_folder_field() {
+        let s = schema_for("list").unwrap();
+        let folder = s.output_fields.iter().find(|f| f.name == "folder").unwrap();
+        assert!(folder.nullable);
+        assert_eq!(folder.r#type, "string");
+    }
+
+    #[test]
+    fn schema_list_has_evicted_field() {
+        let s = schema_for("list").unwrap();
+        let evicted = s.output_fields.iter().find(|f| f.name == "evicted").unwrap();
+        assert!(!evicted.nullable);
+        assert_eq!(evicted.r#type, "boolean");
+    }
+
+    #[test]
+    fn schema_extract_has_evicted_field() {
+        let s = schema_for("extract").unwrap();
+        let evicted = s.output_fields.iter().find(|f| f.name == "evicted").unwrap();
+        assert_eq!(evicted.r#type, "integer");
     }
 
     #[test]

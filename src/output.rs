@@ -28,6 +28,8 @@ pub struct ListEntry {
     pub method: Option<String>,
     pub words: Option<usize>,
     pub file: Option<String>,
+    pub folder: Option<String>,
+    pub evicted: bool,
 }
 
 #[derive(Serialize)]
@@ -40,12 +42,14 @@ pub struct ShowEntry {
     pub words: usize,
     pub file: String,
     pub transcript: String,
+    pub folder: Option<String>,
 }
 
 #[derive(Serialize)]
 pub struct ExtractResult {
     pub extracted: usize,
     pub skipped: usize,
+    pub evicted: usize,
     pub needs_whisply: usize,
     pub files: Vec<ExtractedFile>,
 }
@@ -57,6 +61,7 @@ pub struct ExtractedFile {
     pub method: String,
     pub words: usize,
     pub file: String,
+    pub folder: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -72,6 +77,8 @@ pub struct DryRunEntry {
     pub date: String,
     pub duration: String,
     pub has_tsrp: bool,
+    pub folder: Option<String>,
+    pub evicted: bool,
 }
 
 pub fn format_dry_run_human(result: &DryRunResult) -> String {
@@ -79,8 +86,18 @@ pub fn format_dry_run_human(result: &DryRunResult) -> String {
     let mut out = String::new();
     writeln!(out, "Dry run: {} recording(s) would be processed\n", result.total).unwrap();
     for e in &result.recordings {
-        let tsrp_status = if e.has_tsrp { "tsrp available" } else { "needs whisply" };
-        writeln!(out, "  {} {} ({}, {})", e.date, e.title, e.duration, tsrp_status).unwrap();
+        let status = if e.evicted {
+            "iCloud-only".to_string()
+        } else if e.has_tsrp {
+            "tsrp available".to_string()
+        } else {
+            "needs whisply".to_string()
+        };
+        let folder_display = e
+            .folder
+            .as_ref()
+            .map_or(String::new(), |f| format!(" [{f}]"));
+        writeln!(out, "  {} {}{} ({}, {})", e.date, e.title, folder_display, e.duration, status).unwrap();
     }
     out
 }
@@ -95,8 +112,11 @@ pub fn build_list_entry(
     duration_secs: f64,
     title: &str,
     processed: Option<&ProcessedEntry>,
+    folder: Option<&str>,
+    evicted: bool,
 ) -> ListEntry {
     let duration = format_duration(duration_secs);
+    let folder = folder.map(|s| s.to_string());
     match processed {
         Some(e) if e.method == "tsrp" || e.method == "whisply" => ListEntry {
             uuid: uuid.to_string(),
@@ -108,6 +128,8 @@ pub fn build_list_entry(
             method: Some(e.method.clone()),
             words: Some(e.words),
             file: e.output.clone(),
+            folder,
+            evicted,
         },
         Some(e) if e.method == "no-transcript" => ListEntry {
             uuid: uuid.to_string(),
@@ -119,6 +141,21 @@ pub fn build_list_entry(
             method: None,
             words: None,
             file: None,
+            folder,
+            evicted,
+        },
+        _ if evicted => ListEntry {
+            uuid: uuid.to_string(),
+            date: date.to_string(),
+            duration,
+            duration_secs,
+            title: title.to_string(),
+            status: "evicted".to_string(),
+            method: None,
+            words: None,
+            file: None,
+            folder,
+            evicted,
         },
         _ => ListEntry {
             uuid: uuid.to_string(),
@@ -130,6 +167,8 @@ pub fn build_list_entry(
             method: None,
             words: None,
             file: None,
+            folder,
+            evicted,
         },
     }
 }
@@ -148,14 +187,19 @@ pub fn format_list_human(entries: &[ListEntry]) -> String {
     for e in entries {
         let status_display = match e.status.as_str() {
             "done" => format!("\u{2713} {}", e.method.as_deref().unwrap_or("")),
+            "evicted" => "\u{25CB} iCloud-only".to_string(),
             "needs-whisply" => "\u{25CB} needs --all".to_string(),
             _ => "\u{25CB} pending".to_string(),
         };
         let words_display = e.words.map_or("\u{2014}".to_string(), |w| w.to_string());
         let title: String = e.title.chars().take(35).collect();
+        let folder_display = e
+            .folder
+            .as_ref()
+            .map_or(String::new(), |f| format!(" [{f}]"));
         writeln!(
             out,
-            "{:<20} {:>8}   {:<16} {:>5}   {title}",
+            "{:<20} {:>8}   {:<16} {:>5}   {title}{folder_display}",
             e.date, e.duration, status_display, words_display
         )
         .unwrap();
@@ -206,10 +250,15 @@ pub fn format_show_json(entries: &[ShowEntry]) -> String {
 }
 
 pub fn format_extract_human(result: &ExtractResult) -> String {
-    format!(
-        "Done: {} extracted, {} skipped, {} need --all for whisply",
-        result.extracted, result.skipped, result.needs_whisply
-    )
+    let mut parts = vec![
+        format!("{} extracted", result.extracted),
+        format!("{} skipped", result.skipped),
+    ];
+    if result.evicted > 0 {
+        parts.push(format!("{} iCloud-only", result.evicted));
+    }
+    parts.push(format!("{} need --all for whisply", result.needs_whisply));
+    format!("Done: {}", parts.join(", "))
 }
 
 pub fn format_extract_json(result: &ExtractResult) -> String {
@@ -296,7 +345,7 @@ mod tests {
 
     #[test]
     fn build_list_entry_pending() {
-        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", None);
+        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", None, None, false);
         assert_eq!(entry.uuid, "uuid-1");
         assert_eq!(entry.status, "pending");
         assert_eq!(entry.duration, "2m05s");
@@ -313,7 +362,7 @@ mod tests {
             words: 42,
             output: Some("2024-01-15-my-memo.md".to_string()),
         };
-        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", Some(&pe));
+        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", Some(&pe), None, false);
         assert_eq!(entry.status, "done");
         assert_eq!(entry.method, Some("tsrp".to_string()));
         assert_eq!(entry.words, Some(42));
@@ -329,8 +378,28 @@ mod tests {
             words: 0,
             output: None,
         };
-        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", Some(&pe));
+        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", Some(&pe), None, false);
         assert_eq!(entry.status, "needs-whisply");
+    }
+
+    #[test]
+    fn build_list_entry_with_folder() {
+        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", None, Some("Work"), false);
+        assert_eq!(entry.folder, Some("Work".to_string()));
+        assert!(!entry.evicted);
+    }
+
+    #[test]
+    fn build_list_entry_no_folder() {
+        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", None, None, false);
+        assert!(entry.folder.is_none());
+    }
+
+    #[test]
+    fn build_list_entry_evicted() {
+        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", None, None, true);
+        assert_eq!(entry.status, "evicted");
+        assert!(entry.evicted);
     }
 
     // --- format_list_json ---
@@ -347,6 +416,8 @@ mod tests {
             method: None,
             words: None,
             file: None,
+            folder: None,
+            evicted: false,
         }];
         let json = format_list_json(&entries);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -368,6 +439,8 @@ mod tests {
             method: None,
             words: None,
             file: None,
+            folder: None,
+            evicted: false,
         }];
         let output = format_list_human(&entries);
         assert!(output.contains("Date"));
@@ -387,6 +460,7 @@ mod tests {
             words: 42,
             file: "2024-01-15-my-memo.md".to_string(),
             transcript: "Hello world".to_string(),
+            folder: None,
         }];
         let json = format_show_json(&entries);
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -407,6 +481,7 @@ mod tests {
             words: 1000,
             file: "test.md".to_string(),
             transcript: long_text,
+            folder: None,
         }];
         let output = format_show_human(&entries);
         assert!(output.contains("truncated"));
@@ -419,6 +494,7 @@ mod tests {
         let result = ExtractResult {
             extracted: 2,
             skipped: 1,
+            evicted: 0,
             needs_whisply: 0,
             files: vec![ExtractedFile {
                 uuid: "uuid-1".to_string(),
@@ -426,6 +502,7 @@ mod tests {
                 method: "tsrp".to_string(),
                 words: 50,
                 file: "2024-01-15-memo.md".to_string(),
+                folder: None,
             }],
         };
         let json = format_extract_json(&result);
@@ -441,6 +518,7 @@ mod tests {
         let result = ExtractResult {
             extracted: 2,
             skipped: 1,
+            evicted: 0,
             needs_whisply: 3,
             files: vec![],
         };
@@ -463,6 +541,8 @@ mod tests {
                     date: "2024-01-15 10:30".to_string(),
                     duration: "2m05s".to_string(),
                     has_tsrp: true,
+                    folder: None,
+                    evicted: false,
                 },
                 DryRunEntry {
                     uuid: "uuid-2".to_string(),
@@ -470,6 +550,8 @@ mod tests {
                     date: "2024-01-16 11:00".to_string(),
                     duration: "5m30s".to_string(),
                     has_tsrp: false,
+                    folder: None,
+                    evicted: false,
                 },
             ],
         };
@@ -490,6 +572,8 @@ mod tests {
                 date: "2024-01-15 10:30".to_string(),
                 duration: "1m00s".to_string(),
                 has_tsrp: true,
+                folder: None,
+                evicted: false,
             }],
         };
         let output = format_dry_run_human(&result);
@@ -508,6 +592,8 @@ mod tests {
                 date: "2024-01-15 10:30".to_string(),
                 duration: "3m00s".to_string(),
                 has_tsrp: false,
+                folder: None,
+                evicted: false,
             }],
         };
         let output = format_dry_run_human(&result);
@@ -560,6 +646,8 @@ mod tests {
                 method: None,
                 words: None,
                 file: None,
+                folder: None,
+                evicted: false,
             },
             ListEntry {
                 uuid: "uuid-2".to_string(),
@@ -571,6 +659,8 @@ mod tests {
                 method: Some("tsrp".to_string()),
                 words: Some(50),
                 file: Some("b.md".to_string()),
+                folder: None,
+                evicted: false,
             },
         ];
         let output = format_list_ndjson(&entries);
@@ -593,11 +683,106 @@ mod tests {
             words: 10,
             file: "a.md".to_string(),
             transcript: "Hello".to_string(),
+            folder: None,
         }];
         let output = format_show_ndjson(&entries);
         let lines: Vec<&str> = output.trim().lines().collect();
         assert_eq!(lines.len(), 1);
         let parsed: serde_json::Value = serde_json::from_str(lines[0]).unwrap();
         assert_eq!(parsed["transcript"], "Hello");
+    }
+
+    // --- folder + evicted ---
+
+    #[test]
+    fn format_list_human_shows_folder() {
+        let entries = vec![ListEntry {
+            uuid: "uuid-1".to_string(),
+            date: "2024-01-15 10:30".to_string(),
+            duration: "2m05s".to_string(),
+            duration_secs: 125.0,
+            title: "My Memo".to_string(),
+            status: "pending".to_string(),
+            method: None,
+            words: None,
+            file: None,
+            folder: Some("Work".to_string()),
+            evicted: false,
+        }];
+        let output = format_list_human(&entries);
+        assert!(output.contains("[Work]"));
+    }
+
+    #[test]
+    fn format_list_human_shows_evicted() {
+        let entries = vec![ListEntry {
+            uuid: "uuid-1".to_string(),
+            date: "2024-01-15 10:30".to_string(),
+            duration: "2m05s".to_string(),
+            duration_secs: 125.0,
+            title: "My Memo".to_string(),
+            status: "evicted".to_string(),
+            method: None,
+            words: None,
+            file: None,
+            folder: None,
+            evicted: true,
+        }];
+        let output = format_list_human(&entries);
+        assert!(output.contains("iCloud-only"));
+    }
+
+    #[test]
+    fn format_list_json_includes_folder() {
+        let entries = vec![ListEntry {
+            uuid: "uuid-1".to_string(),
+            date: "2024-01-15 10:30".to_string(),
+            duration: "2m05s".to_string(),
+            duration_secs: 125.0,
+            title: "My Memo".to_string(),
+            status: "pending".to_string(),
+            method: None,
+            words: None,
+            file: None,
+            folder: Some("Work".to_string()),
+            evicted: false,
+        }];
+        let json = format_list_json(&entries);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["folder"], "Work");
+    }
+
+    #[test]
+    fn format_list_json_includes_evicted() {
+        let entries = vec![ListEntry {
+            uuid: "uuid-1".to_string(),
+            date: "2024-01-15 10:30".to_string(),
+            duration: "2m05s".to_string(),
+            duration_secs: 125.0,
+            title: "My Memo".to_string(),
+            status: "evicted".to_string(),
+            method: None,
+            words: None,
+            file: None,
+            folder: None,
+            evicted: true,
+        }];
+        let json = format_list_json(&entries);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["evicted"], true);
+        assert_eq!(parsed[0]["status"], "evicted");
+    }
+
+    #[test]
+    fn format_extract_human_shows_evicted() {
+        let result = ExtractResult {
+            extracted: 1,
+            skipped: 0,
+            evicted: 2,
+            needs_whisply: 0,
+            files: vec![],
+        };
+        let output = format_extract_human(&result);
+        assert!(output.contains("2 iCloud-only"));
     }
 }

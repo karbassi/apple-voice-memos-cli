@@ -75,9 +75,16 @@ enum Commands {
         /// Preview what would be processed without writing files
         #[arg(long)]
         dry_run: bool,
+        /// Only include recordings in this folder
+        #[arg(long)]
+        folder: Option<String>,
     },
     /// List all recordings and their status
-    List,
+    List {
+        /// Only include recordings in this folder
+        #[arg(long)]
+        folder: Option<String>,
+    },
     /// Show recent transcripts
     Show {
         /// Number of transcripts to show
@@ -132,8 +139,11 @@ fn get_recordings() -> Result<Vec<Recording>> {
     let conn = Connection::open(&tmp).context("failed to open Voice Memos database")?;
     let mut stmt = conn
         .prepare(
-            "SELECT ZUNIQUEID, ZENCRYPTEDTITLE, ZPATH, ZDURATION, ZDATE, ZCUSTOMLABEL \
-             FROM ZCLOUDRECORDING ORDER BY ZDATE DESC",
+            "SELECT r.ZUNIQUEID, r.ZENCRYPTEDTITLE, r.ZPATH, r.ZDURATION, r.ZDATE, r.ZCUSTOMLABEL, \
+             f.ZNAME, r.ZEVICTIONDATE \
+             FROM ZCLOUDRECORDING r \
+             LEFT JOIN ZFOLDER f ON r.ZFOLDER = f.Z_PK \
+             ORDER BY r.ZDATE DESC",
         )
         .context("failed to query recordings table")?;
 
@@ -145,6 +155,8 @@ fn get_recordings() -> Result<Vec<Recording>> {
             let duration: f64 = row.get::<_, Option<f64>>(3)?.unwrap_or(0.0);
             let zdate: f64 = row.get::<_, Option<f64>>(4)?.unwrap_or(0.0);
             let custom_label: Option<String> = row.get(5)?;
+            let folder: Option<String> = row.get(6)?;
+            let eviction_date: Option<f64> = row.get(7)?;
 
             let ts = CORE_DATA_EPOCH + zdate as i64;
             let dt = Utc
@@ -163,6 +175,8 @@ fn get_recordings() -> Result<Vec<Recording>> {
                 path,
                 duration,
                 date: dt,
+                folder,
+                evicted: eviction_date.is_some(),
             })
         })
         .context("failed to query recordings")?;
@@ -261,23 +275,45 @@ fn write_transcript(
     Ok(out_path)
 }
 
-fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool, fields: &[String]) -> Result<()> {
+fn cmd_extract_dry_run(
+    out: &PathBuf,
+    force: bool,
+    json: bool,
+    fields: &[String],
+    folder_filter: Option<&str>,
+) -> Result<()> {
     let state = load_state(out);
     let recordings = get_recordings()?;
     let rdir = recordings_dir()?;
 
-    let to_process: Vec<&Recording> = if force {
-        recordings.iter().collect()
-    } else {
-        recordings
-            .iter()
-            .filter(|r| !state.processed.contains_key(&r.uuid))
-            .collect()
-    };
+    let to_process: Vec<&Recording> = recordings
+        .iter()
+        .filter(|r| {
+            if let Some(f) = folder_filter {
+                r.folder.as_deref() == Some(f)
+            } else {
+                true
+            }
+        })
+        .filter(|r| force || !state.processed.contains_key(&r.uuid))
+        .collect();
 
+    let mut evicted_count = 0usize;
     let entries: Vec<DryRunEntry> = to_process
         .iter()
         .filter_map(|rec| {
+            if rec.evicted {
+                evicted_count += 1;
+                return Some(DryRunEntry {
+                    uuid: rec.uuid.clone(),
+                    title: rec.title.clone(),
+                    date: rec.date.format("%Y-%m-%d %H:%M").to_string(),
+                    duration: format_duration(rec.duration),
+                    has_tsrp: false,
+                    folder: rec.folder.clone(),
+                    evicted: true,
+                });
+            }
             let m4a = rdir.join(&rec.path);
             if !m4a.exists() {
                 return None;
@@ -290,6 +326,8 @@ fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool, fields: &[String]
                 date: rec.date.format("%Y-%m-%d %H:%M").to_string(),
                 duration: format_duration(rec.duration),
                 has_tsrp,
+                folder: rec.folder.clone(),
+                evicted: false,
             })
         })
         .collect();
@@ -307,20 +345,30 @@ fn cmd_extract_dry_run(out: &PathBuf, force: bool, json: bool, fields: &[String]
     Ok(())
 }
 
-fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool, fields: &[String]) -> Result<()> {
+fn cmd_extract(
+    out: &PathBuf,
+    all: bool,
+    force: bool,
+    json: bool,
+    fields: &[String],
+    folder_filter: Option<&str>,
+) -> Result<()> {
     fs::create_dir_all(out).context("failed to create output directory")?;
     let mut state = load_state(out);
     let recordings = get_recordings()?;
     let rdir = recordings_dir()?;
 
-    let to_process: Vec<&Recording> = if force {
-        recordings.iter().collect()
-    } else {
-        recordings
-            .iter()
-            .filter(|r| !state.processed.contains_key(&r.uuid))
-            .collect()
-    };
+    let to_process: Vec<&Recording> = recordings
+        .iter()
+        .filter(|r| {
+            if let Some(f) = folder_filter {
+                r.folder.as_deref() == Some(f)
+            } else {
+                true
+            }
+        })
+        .filter(|r| force || !state.processed.contains_key(&r.uuid))
+        .collect();
 
     if to_process.is_empty() {
         if json {
@@ -328,6 +376,7 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool, fields: &[Stri
                 &format_extract_json(&ExtractResult {
                     extracted: 0,
                     skipped: 0,
+                    evicted: 0,
                     needs_whisply: 0,
                     files: vec![],
                 }),
@@ -346,11 +395,20 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool, fields: &[Stri
     let mut result = ExtractResult {
         extracted: 0,
         skipped: 0,
+        evicted: 0,
         needs_whisply: 0,
         files: vec![],
     };
 
     for rec in &to_process {
+        if rec.evicted {
+            if !json {
+                let title_short: String = rec.title.chars().take(40).collect();
+                println!("  SKIP {title_short} \u{2014} iCloud-only (evicted)");
+            }
+            result.evicted += 1;
+            continue;
+        }
         let m4a = rdir.join(&rec.path);
         if !m4a.exists() {
             if !json {
@@ -421,6 +479,7 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool, fields: &[Stri
                     method: method.to_string(),
                     words: word_count,
                     file: fname.clone(),
+                    folder: rec.folder.clone(),
                 });
                 state.processed.insert(
                     rec.uuid.clone(),
@@ -446,12 +505,25 @@ fn cmd_extract(out: &PathBuf, all: bool, force: bool, json: bool, fields: &[Stri
     Ok(())
 }
 
-fn cmd_list(out: &PathBuf, json: bool, ndjson: bool, fields: &[String]) -> Result<()> {
+fn cmd_list(
+    out: &PathBuf,
+    json: bool,
+    ndjson: bool,
+    fields: &[String],
+    folder_filter: Option<&str>,
+) -> Result<()> {
     let recordings = get_recordings()?;
     let state = load_state(out);
 
     let entries: Vec<_> = recordings
         .iter()
+        .filter(|r| {
+            if let Some(f) = folder_filter {
+                r.folder.as_deref() == Some(f)
+            } else {
+                true
+            }
+        })
         .map(|rec| {
             let date_str = rec.date.format("%Y-%m-%d %H:%M").to_string();
             build_list_entry(
@@ -460,6 +532,8 @@ fn cmd_list(out: &PathBuf, json: bool, ndjson: bool, fields: &[String]) -> Resul
                 rec.duration,
                 &rec.title,
                 state.processed.get(&rec.uuid),
+                rec.folder.as_deref(),
+                rec.evicted,
             )
         })
         .collect();
@@ -504,6 +578,7 @@ fn cmd_show(out: &PathBuf, limit: usize, json: bool, ndjson: bool, fields: &[Str
                 words: word_count,
                 file: fname.clone(),
                 transcript,
+                folder: rec.folder.clone(),
             })
         })
         .take(limit)
@@ -661,15 +736,16 @@ fn main() {
             all,
             force,
             dry_run,
+            folder,
         } => {
             if dry_run {
-                cmd_extract_dry_run(&out, force, json, fields)
+                cmd_extract_dry_run(&out, force, json, fields, folder.as_deref())
             } else {
-                cmd_extract(&out, all, force, json, fields)
+                cmd_extract(&out, all, force, json, fields, folder.as_deref())
             }
         }
         Commands::Schema { command } => cmd_schema(command.as_deref()),
-        Commands::List => cmd_list(&out, json, ndjson, fields),
+        Commands::List { folder } => cmd_list(&out, json, ndjson, fields, folder.as_deref()),
         Commands::Show { limit } => cmd_show(&out, limit, json, ndjson, fields),
         Commands::Watch { action } => cmd_watch(&out, &action),
     };

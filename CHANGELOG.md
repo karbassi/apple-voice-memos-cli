@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Folder support: recordings now include their Voice Memos folder name in all outputs
+- `--folder <name>` filter for `list` and `extract` commands
+- iCloud eviction awareness: evicted files are distinguished from missing files
+- Human format shows `[FolderName]` after title and `iCloud-only` status for evicted recordings
+- `folder` and `evicted` fields in JSON/NDJSON output and schema definitions
+
 ## [0.1.0] - 2026-03-06
 
 ### Added
