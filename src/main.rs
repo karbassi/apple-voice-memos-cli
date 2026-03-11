@@ -16,7 +16,7 @@ use output::{
     format_list_ndjson, format_show_human, format_show_json, format_show_ndjson, DryRunEntry,
     DryRunResult, ExtractResult, ExtractedFile, ShowEntry,
 };
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use state::{load_state, save_state};
 use std::fs;
 use std::path::PathBuf;
@@ -125,18 +125,8 @@ fn db_path() -> Result<PathBuf> {
 
 fn get_recordings() -> Result<Vec<Recording>> {
     let src = db_path()?;
-    let tmp = PathBuf::from("/tmp/vm_extract.db");
-    fs::copy(&src, &tmp).context("failed to copy Voice Memos database")?;
-    let wal = src.with_extension("db-wal");
-    if wal.exists() {
-        let _ = fs::copy(&wal, tmp.with_extension("db-wal"));
-    }
-    let shm = src.with_extension("db-shm");
-    if shm.exists() {
-        let _ = fs::copy(&shm, tmp.with_extension("db-shm"));
-    }
-
-    let conn = Connection::open(&tmp).context("failed to open Voice Memos database")?;
+    let conn = Connection::open_with_flags(&src, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .context("failed to open Voice Memos database")?;
     let mut stmt = conn
         .prepare(
             "SELECT r.ZUNIQUEID, r.ZENCRYPTEDTITLE, r.ZPATH, r.ZDURATION, r.ZDATE, r.ZCUSTOMLABEL, \
