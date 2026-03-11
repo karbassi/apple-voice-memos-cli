@@ -1,0 +1,23 @@
+[tools]
+rust = "latest"
+
+[tasks.build]
+run = "cargo build"
+
+[tasks.release]
+run = "cargo build --release"
+
+[tasks.test]
+run = "cargo test"
+
+[tasks.lint]
+run = ["cargo clippy -- -D warnings", "cargo fmt --check"]
+
+[tasks.fmt]
+run = "cargo fmt"
+
+[tasks.clean]
+run = "cargo clean"
+
+[tasks.install]
+run = "cargo install --path ."

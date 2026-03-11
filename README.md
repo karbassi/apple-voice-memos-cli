@@ -1,4 +1,4 @@
-# voice-memos
+# apple-voice-memos-cli
 
 > Extract transcripts from Apple Voice Memos.
 
@@ -14,27 +14,27 @@ cargo install --path .
 
 ```sh
 # List all recordings
-voice-memos list
+apple-voice-memos-cli list
 
 # Show recent transcripts
-voice-memos show -n 3
+apple-voice-memos-cli show -n 3
 
 # Extract new transcripts (preview first)
-voice-memos extract --dry-run
-voice-memos extract
+apple-voice-memos-cli extract --dry-run
+apple-voice-memos-cli extract
 
 # Use whisply for recordings without embedded transcripts
-voice-memos extract --all
+apple-voice-memos-cli extract --all
 
 # JSON output for scripts and agents
-voice-memos --output json list
-voice-memos --output json --fields title,status,words list
+apple-voice-memos-cli --output json list
+apple-voice-memos-cli --output json --fields title,status,words list
 
 # Inspect output schema
-voice-memos schema list
+apple-voice-memos-cli schema list
 
 # Auto-watch for new recordings
-voice-memos watch install
+apple-voice-memos-cli watch install
 ```
 
 Output format is auto-detected: NDJSON when piped, human-readable in a terminal. Override with `--output` or the `OUTPUT_FORMAT` env var.

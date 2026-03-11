@@ -6,27 +6,27 @@ pub mod tsrp;
 pub mod types;
 pub mod validate;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use chrono::{Local, TimeZone, Utc};
 use clap::{Parser, Subcommand, ValueEnum};
 use format::{format_duration, slugify};
 use output::{
-    build_list_entry, filter_json_fields, format_dry_run_human, format_dry_run_json,
-    format_extract_human, format_extract_json, format_list_human, format_list_json,
-    format_list_ndjson, format_show_human, format_show_json, format_show_ndjson, DryRunEntry,
-    DryRunResult, ExtractResult, ExtractedFile, ShowEntry,
+    DryRunEntry, DryRunResult, ExtractResult, ExtractedFile, ShowEntry, build_list_entry,
+    filter_json_fields, format_dry_run_human, format_dry_run_json, format_extract_human,
+    format_extract_json, format_list_human, format_list_json, format_list_ndjson,
+    format_show_human, format_show_json, format_show_ndjson,
 };
 use rusqlite::{Connection, OpenFlags};
 use state::{load_state, save_state};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tsrp::{find_tsrp, parse_tsrp};
 use types::{ProcessedEntry, Recording};
 
 const DB_REL: &str =
     "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings/CloudRecordings.db";
-const PLIST_LABEL: &str = "com.karbassi.voice-memos";
+const PLIST_LABEL: &str = "com.karbassi.apple-voice-memos-cli";
 /// Core Data epoch: 2001-01-01T00:00:00Z
 const CORE_DATA_EPOCH: i64 = 978_307_200;
 
@@ -37,7 +37,29 @@ fn default_out_dir() -> PathBuf {
 }
 
 #[derive(Parser)]
-#[command(name = "voice-memos", about = "Extract transcripts from Apple Voice Memos")]
+#[command(
+    name = "apple-voice-memos-cli",
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("VERGEN_GIT_SHA"), " ", env!("VERGEN_BUILD_DATE"), ")"),
+    long_version = concat!(
+        env!("CARGO_PKG_VERSION"), "\n",
+        "commit: ", env!("VERGEN_GIT_SHA"), "\n",
+        "dirty:  ", env!("VERGEN_GIT_DIRTY"), "\n",
+        "built:  ", env!("VERGEN_BUILD_DATE"),
+    ),
+    about = "Extract transcripts from Apple Voice Memos",
+    after_long_help = "\
+EXAMPLES
+  $ apple-voice-memos-cli list
+  $ apple-voice-memos-cli extract --dry-run
+  $ apple-voice-memos-cli extract
+  $ apple-voice-memos-cli --output json list --fields title,status,words
+  $ apple-voice-memos-cli show -n 3
+  $ apple-voice-memos-cli completions fish > ~/.config/fish/completions/apple-voice-memos-cli.fish
+
+LEARN MORE
+  apple-voice-memos-cli <command> --help
+  https://github.com/karbassi/apple-voice-memos-cli"
+)]
 struct Cli {
     /// Output directory
     #[arg(long, default_value_os_t = default_out_dir())]
@@ -100,6 +122,12 @@ enum Commands {
     Watch {
         #[arg(value_parser = ["install", "uninstall", "status"])]
         action: String,
+    },
+    /// Generate shell completions
+    Completions {
+        /// Shell to generate completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
     },
 }
 
@@ -174,13 +202,13 @@ fn get_recordings() -> Result<Vec<Recording>> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-fn extract_transcript_tsrp(m4a_path: &PathBuf) -> Option<String> {
+fn extract_transcript_tsrp(m4a_path: &Path) -> Option<String> {
     let data = fs::read(m4a_path).ok()?;
     let payload = find_tsrp(&data)?;
     parse_tsrp(payload)
 }
 
-fn transcribe_whisply(m4a_path: &PathBuf) -> Option<String> {
+fn transcribe_whisply(m4a_path: &Path) -> Option<String> {
     let token_output = Command::new("op")
         .args(["read", "op://homelab/AI Assistant/HuggingFace/token"])
         .output()
@@ -227,7 +255,7 @@ fn transcribe_whisply(m4a_path: &PathBuf) -> Option<String> {
 }
 
 fn write_transcript(
-    out: &PathBuf,
+    out: &Path,
     rec: &Recording,
     transcript: &str,
     method: &str,
@@ -266,7 +294,7 @@ fn write_transcript(
 }
 
 fn cmd_extract_dry_run(
-    out: &PathBuf,
+    out: &Path,
     force: bool,
     json: bool,
     fields: &[String],
@@ -336,7 +364,7 @@ fn cmd_extract_dry_run(
 }
 
 fn cmd_extract(
-    out: &PathBuf,
+    out: &Path,
     all: bool,
     force: bool,
     json: bool,
@@ -452,11 +480,7 @@ fn cmd_extract(
             Some(ref text) => {
                 let out_path = write_transcript(out, rec, text, method)?;
                 let word_count = text.split_whitespace().count();
-                let fname = out_path
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .to_string();
+                let fname = out_path.file_name().unwrap().to_string_lossy().to_string();
                 if !json {
                     let title_short: String = rec.title.chars().take(40).collect();
                     println!(
@@ -496,7 +520,7 @@ fn cmd_extract(
 }
 
 fn cmd_list(
-    out: &PathBuf,
+    out: &Path,
     json: bool,
     ndjson: bool,
     fields: &[String],
@@ -538,7 +562,7 @@ fn cmd_list(
     Ok(())
 }
 
-fn cmd_show(out: &PathBuf, limit: usize, json: bool, ndjson: bool, fields: &[String]) -> Result<()> {
+fn cmd_show(out: &Path, limit: usize, json: bool, ndjson: bool, fields: &[String]) -> Result<()> {
     let recordings = get_recordings()?;
     let state = load_state(out);
 
@@ -550,10 +574,10 @@ fn cmd_show(out: &PathBuf, limit: usize, json: bool, ndjson: bool, fields: &[Str
             let path = out.join(fname);
             let content = fs::read_to_string(&path).ok()?;
 
-            let transcript = if content.starts_with("---") {
-                content[3..]
+            let transcript = if let Some(after) = content.strip_prefix("---") {
+                after
                     .find("---")
-                    .map_or(content.clone(), |end| content[end + 6..].trim().to_string())
+                    .map_or(content.clone(), |end| after[end + 3..].trim().to_string())
             } else {
                 content
             };
@@ -584,7 +608,7 @@ fn cmd_show(out: &PathBuf, limit: usize, json: bool, ndjson: bool, fields: &[Str
     Ok(())
 }
 
-fn cmd_watch(out: &PathBuf, action: &str) -> Result<()> {
+fn cmd_watch(out: &Path, action: &str) -> Result<()> {
     let home = dirs::home_dir().context("cannot determine home directory")?;
     let plist_path = home.join(format!("Library/LaunchAgents/{PLIST_LABEL}.plist"));
     let rdir = recordings_dir()?;
@@ -592,7 +616,7 @@ fn cmd_watch(out: &PathBuf, action: &str) -> Result<()> {
     match action {
         "install" => {
             let exe =
-                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("voice-memos"));
+                std::env::current_exe().unwrap_or_else(|_| PathBuf::from("apple-voice-memos-cli"));
             let log_path = out.join("launchd.log");
             let plist = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -708,7 +732,27 @@ fn resolve_output_format(explicit: Option<OutputArg>) -> OutputArg {
 }
 
 fn main() {
+    // Reset SIGPIPE to default so piping to `head` etc. exits cleanly
+    #[cfg(unix)]
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
+
+    // Handle completions early (no output dir needed)
+    if let Commands::Completions { shell } = &cli.command {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        clap_complete::generate(
+            *shell,
+            &mut cmd,
+            "apple-voice-memos-cli",
+            &mut std::io::stdout(),
+        );
+        return;
+    }
+
     let out = cli.dir;
     let output = resolve_output_format(cli.output);
     let json = matches!(output, OutputArg::Json | OutputArg::Ndjson);
@@ -738,6 +782,7 @@ fn main() {
         Commands::List { folder } => cmd_list(&out, json, ndjson, fields, folder.as_deref()),
         Commands::Show { limit } => cmd_show(&out, limit, json, ndjson, fields),
         Commands::Watch { action } => cmd_watch(&out, &action),
+        Commands::Completions { .. } => unreachable!(),
     };
 
     if let Err(e) = result {

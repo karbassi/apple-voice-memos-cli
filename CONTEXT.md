@@ -1,4 +1,4 @@
-# voice-memos CLI
+# apple-voice-memos-cli
 
 Extracts transcripts from Apple Voice Memos on macOS.
 
@@ -6,28 +6,28 @@ Extracts transcripts from Apple Voice Memos on macOS.
 
 ```bash
 # List all recordings with status
-voice-memos list
-voice-memos --output json list
+apple-voice-memos-cli list
+apple-voice-memos-cli --output json list
 
 # Show recent transcripts
-voice-memos show -n 3
-voice-memos --output json show --fields uuid,title,words
+apple-voice-memos-cli show -n 3
+apple-voice-memos-cli --output json show --fields uuid,title,words
 
 # Extract new transcripts
-voice-memos extract --dry-run          # preview first
-voice-memos extract                     # tsrp only
-voice-memos extract --all              # tsrp + whisply fallback
-voice-memos extract --force            # re-process everything
+apple-voice-memos-cli extract --dry-run          # preview first
+apple-voice-memos-cli extract                     # tsrp only
+apple-voice-memos-cli extract --all              # tsrp + whisply fallback
+apple-voice-memos-cli extract --force            # re-process everything
 
 # JSON output (for agents)
-voice-memos --output json list
-voice-memos --output ndjson list       # streaming, one object per line
-voice-memos --output json list --fields uuid,title,status
+apple-voice-memos-cli --output json list
+apple-voice-memos-cli --output ndjson list       # streaming, one object per line
+apple-voice-memos-cli --output json list --fields uuid,title,status
 
 # Manage launchd watcher
-voice-memos watch install
-voice-memos watch status
-voice-memos watch uninstall
+apple-voice-memos-cli watch install
+apple-voice-memos-cli watch status
+apple-voice-memos-cli watch uninstall
 ```
 
 ## Important for Agents

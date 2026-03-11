@@ -1,7 +1,7 @@
-use anyhow::{Context, Result};
-use crate::types::State;
 #[cfg(test)]
 use crate::types::ProcessedEntry;
+use crate::types::State;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::Path;
 
@@ -72,7 +72,10 @@ mod tests {
 
     #[test]
     fn save_state_returns_error_on_bad_path() {
-        let result = save_state(Path::new("/nonexistent/deeply/nested/path"), &State::default());
+        let result = save_state(
+            Path::new("/nonexistent/deeply/nested/path"),
+            &State::default(),
+        );
         assert!(result.is_err());
     }
 }

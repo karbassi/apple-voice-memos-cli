@@ -1,5 +1,5 @@
 [package]
-name = "voice-memos"
+name = "apple-voice-memos-cli"
 version = "0.1.0"
 edition = "2024"
 description = "Extract transcripts from Apple Voice Memos"
@@ -8,10 +8,15 @@ description = "Extract transcripts from Apple Voice Memos"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 dirs = "6"
+libc = "0.2"
 rusqlite = { version = "0.34", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[build-dependencies]
+vergen-gitcl = { version = "9", features = ["build"] }
 
 [dev-dependencies]
 tempfile = "3"

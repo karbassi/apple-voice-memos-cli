@@ -84,7 +84,12 @@ pub struct DryRunEntry {
 pub fn format_dry_run_human(result: &DryRunResult) -> String {
     use std::fmt::Write;
     let mut out = String::new();
-    writeln!(out, "Dry run: {} recording(s) would be processed\n", result.total).unwrap();
+    writeln!(
+        out,
+        "Dry run: {} recording(s) would be processed\n",
+        result.total
+    )
+    .unwrap();
     for e in &result.recordings {
         let status = if e.evicted {
             "iCloud-only".to_string()
@@ -97,7 +102,12 @@ pub fn format_dry_run_human(result: &DryRunResult) -> String {
             .folder
             .as_ref()
             .map_or(String::new(), |f| format!(" [{f}]"));
-        writeln!(out, "  {} {}{} ({}, {})", e.date, e.title, folder_display, e.duration, status).unwrap();
+        writeln!(
+            out,
+            "  {} {}{} ({}, {})",
+            e.date, e.title, folder_display, e.duration, status
+        )
+        .unwrap();
     }
     out
 }
@@ -240,7 +250,11 @@ pub fn format_show_human(entries: &[ShowEntry]) -> String {
     }
 
     if entries.is_empty() {
-        writeln!(out, "No transcripts available. Run `voice-memos extract` first.").unwrap();
+        writeln!(
+            out,
+            "No transcripts available. Run `apple-voice-memos-cli extract` first."
+        )
+        .unwrap();
     }
     out
 }
@@ -345,7 +359,15 @@ mod tests {
 
     #[test]
     fn build_list_entry_pending() {
-        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", None, None, false);
+        let entry = build_list_entry(
+            "uuid-1",
+            "2024-01-15 10:30",
+            125.0,
+            "My Memo",
+            None,
+            None,
+            false,
+        );
         assert_eq!(entry.uuid, "uuid-1");
         assert_eq!(entry.status, "pending");
         assert_eq!(entry.duration, "2m05s");
@@ -362,7 +384,15 @@ mod tests {
             words: 42,
             output: Some("2024-01-15-my-memo.md".to_string()),
         };
-        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", Some(&pe), None, false);
+        let entry = build_list_entry(
+            "uuid-1",
+            "2024-01-15 10:30",
+            125.0,
+            "My Memo",
+            Some(&pe),
+            None,
+            false,
+        );
         assert_eq!(entry.status, "done");
         assert_eq!(entry.method, Some("tsrp".to_string()));
         assert_eq!(entry.words, Some(42));
@@ -378,26 +408,58 @@ mod tests {
             words: 0,
             output: None,
         };
-        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", Some(&pe), None, false);
+        let entry = build_list_entry(
+            "uuid-1",
+            "2024-01-15 10:30",
+            125.0,
+            "My Memo",
+            Some(&pe),
+            None,
+            false,
+        );
         assert_eq!(entry.status, "needs-whisply");
     }
 
     #[test]
     fn build_list_entry_with_folder() {
-        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", None, Some("Work"), false);
+        let entry = build_list_entry(
+            "uuid-1",
+            "2024-01-15 10:30",
+            125.0,
+            "My Memo",
+            None,
+            Some("Work"),
+            false,
+        );
         assert_eq!(entry.folder, Some("Work".to_string()));
         assert!(!entry.evicted);
     }
 
     #[test]
     fn build_list_entry_no_folder() {
-        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", None, None, false);
+        let entry = build_list_entry(
+            "uuid-1",
+            "2024-01-15 10:30",
+            125.0,
+            "My Memo",
+            None,
+            None,
+            false,
+        );
         assert!(entry.folder.is_none());
     }
 
     #[test]
     fn build_list_entry_evicted() {
-        let entry = build_list_entry("uuid-1", "2024-01-15 10:30", 125.0, "My Memo", None, None, true);
+        let entry = build_list_entry(
+            "uuid-1",
+            "2024-01-15 10:30",
+            125.0,
+            "My Memo",
+            None,
+            None,
+            true,
+        );
         assert_eq!(entry.status, "evicted");
         assert!(entry.evicted);
     }
