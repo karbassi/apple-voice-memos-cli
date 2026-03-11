@@ -155,14 +155,35 @@ fn get_recordings() -> Result<Vec<Recording>> {
     let src = db_path()?;
     let conn = Connection::open_with_flags(&src, OpenFlags::SQLITE_OPEN_READ_ONLY)
         .context("failed to open Voice Memos database")?;
-    let mut stmt = conn
-        .prepare(
+    let has_folder_table: bool = conn
+        .prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='ZFOLDER'")
+        .and_then(|mut s| s.exists([]))
+        .unwrap_or(false);
+
+    let has_zname = has_folder_table
+        && conn
+            .prepare("SELECT ZNAME FROM ZFOLDER LIMIT 0")
+            .is_ok();
+
+    let query = if has_folder_table {
+        let name_col = if has_zname { "f.ZNAME" } else { "f.ZENCRYPTEDNAME" };
+        format!(
             "SELECT r.ZUNIQUEID, r.ZENCRYPTEDTITLE, r.ZPATH, r.ZDURATION, r.ZDATE, r.ZCUSTOMLABEL, \
-             f.ZNAME, r.ZEVICTIONDATE \
+             {name_col}, r.ZEVICTIONDATE \
              FROM ZCLOUDRECORDING r \
              LEFT JOIN ZFOLDER f ON r.ZFOLDER = f.Z_PK \
-             ORDER BY r.ZDATE DESC",
+             ORDER BY r.ZDATE DESC"
         )
+    } else {
+        "SELECT ZUNIQUEID, ZENCRYPTEDTITLE, ZPATH, ZDURATION, ZDATE, ZCUSTOMLABEL, \
+         NULL, ZEVICTIONDATE \
+         FROM ZCLOUDRECORDING \
+         ORDER BY ZDATE DESC"
+            .to_string()
+    };
+
+    let mut stmt = conn
+        .prepare(&query)
         .context("failed to query recordings table")?;
 
     let rows = stmt

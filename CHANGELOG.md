@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-10
+
+### Fixed
+
+- Handle Voice Memos databases that use `ZENCRYPTEDNAME` instead of `ZNAME` in the `ZFOLDER` table
+- Gracefully fall back when `ZFOLDER` table is missing entirely
+
 ## [0.2.0] - 2026-03-10
 
 ### Added
