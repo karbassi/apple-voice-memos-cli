@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-03-10
+
 ### Added
 
 - Folder support: recordings now include their Voice Memos folder name in all outputs
@@ -14,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - iCloud eviction awareness: evicted files are distinguished from missing files
 - Human format shows `[FolderName]` after title and `iCloud-only` status for evicted recordings
 - `folder` and `evicted` fields in JSON/NDJSON output and schema definitions
+- Homebrew tap support via `brew install karbassi/tap/apple-voice-memos-cli`
 
 ## [0.1.0] - 2026-03-06
 

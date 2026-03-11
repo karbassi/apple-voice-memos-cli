@@ -4,32 +4,60 @@ on:
   push:
     tags: ["v*"]
 
-permissions:
-  contents: write
-
 jobs:
   build:
-    strategy:
-      matrix:
-        include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
       - uses: jdx/mise-action@v2
       - uses: Swatinem/rust-cache@v2
-      - run: mise run release -- --target ${{ matrix.target }}
-      - run: |
-          cp target/${{ matrix.target }}/release/apple-voice-memos-cli \
-             apple-voice-memos-cli-${{ matrix.target }}
-          shasum -a 256 apple-voice-memos-cli-${{ matrix.target }} > \
-             apple-voice-memos-cli-${{ matrix.target }}.sha256
+
+      - run: mise run release -- --target aarch64-apple-darwin
+
+      - run: mise run release -- --target x86_64-apple-darwin
+
+      - name: Create universal binary
+        run: |
+          lipo -create \
+            target/aarch64-apple-darwin/release/apple-voice-memos-cli \
+            target/x86_64-apple-darwin/release/apple-voice-memos-cli \
+            -output apple-voice-memos-cli
+          chmod +x apple-voice-memos-cli
+          lipo -archs apple-voice-memos-cli
+          file apple-voice-memos-cli
+
+      - name: Create release archive
+        run: |
+          VERSION="${{ github.ref_name }}"
+          ARCHIVE="apple-voice-memos-cli-${VERSION}-macos-universal.tar.gz"
+          tar czf "${ARCHIVE}" apple-voice-memos-cli
+          SHA256=$(shasum -a 256 "${ARCHIVE}" | awk '{print $1}')
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+          echo "SHA256=${SHA256}" >> "$GITHUB_ENV"
+          echo "${SHA256}  ${ARCHIVE}" > "${ARCHIVE}.sha256"
+
+      - name: Extract changelog
+        run: |
+          VERSION_NO_V="${GITHUB_REF_NAME#v}"
+          NOTES=$(awk "/^## \\[${VERSION_NO_V}\\]/{found=1; next} /^## \\[/{if(found) exit} found{print}" CHANGELOG.md)
+          echo "NOTES<<CHANGELOG_EOF" >> "$GITHUB_ENV"
+          echo "${NOTES}" >> "$GITHUB_ENV"
+          echo "CHANGELOG_EOF" >> "$GITHUB_ENV"
+
       - uses: softprops/action-gh-release@v2
         with:
+          body: ${{ env.NOTES }}
           files: |
-            apple-voice-memos-cli-${{ matrix.target }}
-            apple-voice-memos-cli-${{ matrix.target }}.sha256
-          generate_release_notes: true
+            ${{ env.ARCHIVE }}
+            ${{ env.ARCHIVE }}.sha256
+
+      - name: Trigger homebrew-tap update
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: karbassi/homebrew-tap
+          event-type: release
+          client-payload: '{"formula": "apple-voice-memos-cli"}'
