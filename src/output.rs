@@ -61,6 +61,7 @@ pub struct ExtractedFile {
     pub method: String,
     pub words: usize,
     pub file: String,
+    pub transcript: String,
     pub folder: Option<String>,
 }
 
@@ -564,6 +565,7 @@ mod tests {
                 method: "tsrp".to_string(),
                 words: 50,
                 file: "2024-01-15-memo.md".to_string(),
+                transcript: "Hello world this is a test".to_string(),
                 folder: None,
             }],
         };

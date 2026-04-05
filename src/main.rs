@@ -230,40 +230,50 @@ fn extract_transcript_tsrp(m4a_path: &Path) -> Option<String> {
 }
 
 fn transcribe_whisply(m4a_path: &Path) -> Option<String> {
-    let token_output = Command::new("op")
-        .args(["read", "op://homelab/AI Assistant/HuggingFace/token"])
-        .output()
-        .ok()?;
-    if !token_output.status.success() {
-        return None;
-    }
-    let hf_token = String::from_utf8_lossy(&token_output.stdout)
-        .trim()
-        .to_string();
-    if hf_token.is_empty() {
-        return None;
-    }
-
     let tmp_out = PathBuf::from("/tmp/whisply_out");
     fs::create_dir_all(&tmp_out).ok()?;
 
+    let mut args = vec![
+        "run".to_string(),
+        "-f".to_string(),
+        m4a_path.to_string_lossy().to_string(),
+        "-o".to_string(),
+        tmp_out.to_string_lossy().to_string(),
+        "-e".to_string(),
+        "txt".to_string(),
+        "-l".to_string(),
+        "en".to_string(),
+    ];
+
+    // Pass HF token for diarization support (pyannote models are gated)
+    if let Ok(token_output) = Command::new("op")
+        .args(["read", "op://homelab/AI Assistant/HuggingFace/user_access_token"])
+        .output()
+    {
+        let token = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
+        if token_output.status.success() && !token.is_empty() {
+            args.push("--hf_token".to_string());
+            args.push(token);
+        }
+    }
+
     Command::new("whisply")
-        .args([
-            "run",
-            "--file",
-            &m4a_path.to_string_lossy(),
-            "--output_dir",
-            &tmp_out.to_string_lossy(),
-            "--output_format",
-            "txt",
-            "--hf_token",
-            &hf_token,
-        ])
+        .args(&args)
+        .current_dir(&tmp_out)
         .output()
         .ok()?;
 
+    // Clean up converted wav files whisply leaves in the source directory
+    let wav_name = m4a_path.file_stem().unwrap_or_default().to_string_lossy().to_string() + "_converted.wav";
+    let wav_path = m4a_path.parent().unwrap().join(&wav_name);
+    let _ = fs::remove_file(&wav_path);
+
+    // whisply writes to a subdirectory named after the input file
     let txt = fs::read_dir(&tmp_out)
         .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .flat_map(|d| fs::read_dir(d.path()).ok().into_iter().flatten())
         .filter_map(|e| e.ok())
         .find(|e| e.path().extension().is_some_and(|ext| ext == "txt"))?;
     let content = fs::read_to_string(txt.path()).ok()?;
@@ -353,9 +363,10 @@ fn cmd_extract_dry_run(
                     evicted: true,
                 });
             }
-            let m4a = rdir.join(&rec.path);
+            let mut m4a = rdir.join(&rec.path);
             if !m4a.exists() {
-                return None;
+                let alt = rdir.join(rec.path.replace(' ', "_").replace('-', "_"));
+                if alt.exists() { m4a = alt; } else { return None; }
             }
             let data = fs::read(&m4a).ok()?;
             let has_tsrp = find_tsrp(&data).is_some();
@@ -448,7 +459,15 @@ fn cmd_extract(
             result.evicted += 1;
             continue;
         }
-        let m4a = rdir.join(&rec.path);
+        let mut m4a = rdir.join(&rec.path);
+        // DB path may differ from filesystem (spaces/dashes vs underscores)
+        if !m4a.exists() {
+            let alt_name = rec.path.replace(' ', "_").replace('-', "_");
+            let alt = rdir.join(&alt_name);
+            if alt.exists() {
+                m4a = alt;
+            }
+        }
         if !m4a.exists() {
             if !json {
                 let title_short: String = rec.title.chars().take(40).collect();
@@ -469,16 +488,7 @@ fn cmd_extract(
         match transcript {
             None => {
                 if !all {
-                    state.processed.insert(
-                        rec.uuid.clone(),
-                        ProcessedEntry {
-                            date: rec.date.format("%Y-%m-%d %H:%M").to_string(),
-                            title: rec.title.clone(),
-                            method: "no-transcript".to_string(),
-                            words: 0,
-                            output: None,
-                        },
-                    );
+                    // Don't mark as processed — leave it for a future --all run
                     result.needs_whisply += 1;
                 } else {
                     if !json {
@@ -514,6 +524,7 @@ fn cmd_extract(
                     method: method.to_string(),
                     words: word_count,
                     file: fname.clone(),
+                    transcript: text.clone(),
                     folder: rec.folder.clone(),
                 });
                 state.processed.insert(
