@@ -231,6 +231,7 @@ fn extract_transcript_tsrp(m4a_path: &Path) -> Option<String> {
 
 fn transcribe_whisply(m4a_path: &Path) -> Option<String> {
     let tmp_out = PathBuf::from("/tmp/whisply_out");
+    let _ = fs::remove_dir_all(&tmp_out);
     fs::create_dir_all(&tmp_out).ok()?;
 
     let mut args = vec![
