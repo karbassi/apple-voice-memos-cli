@@ -1,15 +1,86 @@
+const QTA_TSRP_KEY: &[u8] = b"com.apple.VoiceMemos.tsrp";
+
+/// Locate the Apple Intelligence transcript JSON in either container:
+/// a `tsrp` atom (.m4a) or a QuickTime metadata item (.qta).
+pub fn find_transcript(data: &[u8]) -> Option<&[u8]> {
+    find_tsrp(data).or_else(|| find_qta_tsrp(data))
+}
+
+fn be32(data: &[u8], at: usize) -> Option<usize> {
+    Some(u32::from_be_bytes(data.get(at..at.checked_add(4)?)?.try_into().ok()?) as usize)
+}
+
+/// Every offset where `marker` appears.
+fn positions<'a>(data: &'a [u8], marker: &'a [u8]) -> impl Iterator<Item = usize> + 'a {
+    data.windows(marker.len())
+        .enumerate()
+        .filter(move |(_, w)| *w == marker)
+        .map(|(i, _)| i)
+}
+
+/// Box (atom) whose type tag sits at `tag_at`: returns (start, end) if its
+/// size field is sane. Guards against matching the tag inside other bytes.
+fn box_at(data: &[u8], tag_at: usize, min_size: usize) -> Option<(usize, usize)> {
+    let start = tag_at.checked_sub(4)?;
+    let size = be32(data, start)?;
+    let end = start.checked_add(size)?;
+    (size >= min_size && end <= data.len()).then_some((start, end))
+}
+
 pub fn find_tsrp(data: &[u8]) -> Option<&[u8]> {
-    let marker = b"tsrp";
-    let idx = data.windows(4).position(|w| w == marker)?;
-    if idx < 4 {
-        return None;
+    positions(data, b"tsrp").find_map(|idx| {
+        let (_, end) = box_at(data, idx, 8)?;
+        Some(&data[idx + 4..end])
+    })
+}
+
+/// .qta (QuickTime Audio, iOS 26+ Voice Memos): the transcript is an `mdta`
+/// metadata item keyed `com.apple.VoiceMemos.tsrp`. Find the key's 1-based
+/// index in `keys`, then the `ilst` item with that index, then its `data`
+/// payload (after the 8-byte type + locale header).
+pub fn find_qta_tsrp(data: &[u8]) -> Option<&[u8]> {
+    positions(data, b"keys").find_map(|idx| {
+        let (start, end) = box_at(data, idx, 16)?;
+        let key_index = qta_key_index(data, start, end)?;
+        let ilst_at = positions(&data[end..], b"ilst").next()? + end;
+        qta_ilst_payload(data, ilst_at, key_index)
+    })
+}
+
+fn qta_key_index(data: &[u8], start: usize, end: usize) -> Option<usize> {
+    let count = be32(data, start + 12)?;
+    let mut pos = start + 16;
+    for i in 1..=count {
+        let size = be32(data, pos)?;
+        if size < 8 || pos + size > end {
+            return None;
+        }
+        if &data[pos + 8..pos + size] == QTA_TSRP_KEY {
+            return Some(i);
+        }
+        pos += size;
     }
-    let atom_start = idx - 4;
-    let size = u32::from_be_bytes(data[atom_start..atom_start + 4].try_into().ok()?) as usize;
-    if size < 8 || atom_start + size > data.len() {
-        return None;
+    None
+}
+
+fn qta_ilst_payload(data: &[u8], ilst_at: usize, key_index: usize) -> Option<&[u8]> {
+    let (start, end) = box_at(data, ilst_at, 8)?;
+    let mut pos = start + 8;
+    while pos + 8 <= end {
+        let size = be32(data, pos)?;
+        if size < 8 || pos + size > end {
+            return None;
+        }
+        if be32(data, pos + 4)? == key_index {
+            let (dstart, dend) = box_at(data, pos + 12, 16)?;
+            if &data[dstart + 4..dstart + 8] != b"data" || dend > pos + size {
+                return None;
+            }
+            return Some(&data[dstart + 16..dend]);
+        }
+        pos += size;
     }
-    Some(&data[idx + 4..atom_start + size])
+    None
 }
 
 pub fn parse_tsrp(payload: &[u8]) -> Option<String> {
@@ -88,6 +159,69 @@ mod tests {
         buf.extend_from_slice(b"tsrp");
         buf.extend_from_slice(b"tiny");
         assert!(find_tsrp(&buf).is_none());
+    }
+
+    // --- find_qta_tsrp ---
+
+    fn make_box(tag: &[u8], body: &[u8]) -> Vec<u8> {
+        let mut b = ((8 + body.len()) as u32).to_be_bytes().to_vec();
+        b.extend_from_slice(tag);
+        b.extend_from_slice(body);
+        b
+    }
+
+    fn make_qta_meta(keys: &[&[u8]], tsrp_index: u32, json: &[u8]) -> Vec<u8> {
+        let mut kbody = vec![0u8; 4];
+        kbody.extend_from_slice(&(keys.len() as u32).to_be_bytes());
+        for k in keys {
+            kbody.extend_from_slice(&make_box(b"mdta", k));
+        }
+        let mut dbody = vec![0, 0, 0, 1, 0, 0, 0, 0]; // type (UTF-8), locale
+        dbody.extend_from_slice(json);
+        let item = make_box(&tsrp_index.to_be_bytes(), &make_box(b"data", &dbody));
+        let other = make_box(
+            &(tsrp_index + 1).to_be_bytes(),
+            &make_box(b"data", &[0u8; 9]),
+        );
+        let mut ilst = other;
+        ilst.extend_from_slice(&item);
+        let mut meta = make_box(b"keys", &kbody);
+        meta.extend_from_slice(&make_box(b"ilst", &ilst));
+        meta
+    }
+
+    #[test]
+    fn find_qta_tsrp_extracts_payload_by_key_index() {
+        let json = br#"{"attributedString":{"runs":["hi"]}}"#;
+        let meta = make_qta_meta(&[b"com.apple.other", QTA_TSRP_KEY], 2, json);
+        let mut data = vec![0u8; 40];
+        data.extend_from_slice(&meta);
+        assert_eq!(find_qta_tsrp(&data).unwrap(), json);
+        assert_eq!(find_transcript(&data).unwrap(), json);
+    }
+
+    #[test]
+    fn find_qta_tsrp_ignores_tsrp_suffix_in_key_string() {
+        // The bare b"tsrp" match is the tail of the key name; find_tsrp must
+        // reject it (size field reads as garbage) rather than return junk.
+        let json = br#"{"attributedString":{"runs":["hi"]}}"#;
+        let meta = make_qta_meta(&[QTA_TSRP_KEY], 1, json);
+        assert!(find_tsrp(&meta).is_none());
+        assert_eq!(find_transcript(&meta).unwrap(), json);
+    }
+
+    #[test]
+    fn find_qta_tsrp_none_without_key() {
+        let meta = make_qta_meta(&[b"com.apple.other"], 1, b"{}");
+        assert!(find_qta_tsrp(&meta).is_none());
+    }
+
+    #[test]
+    fn find_tsrp_skips_false_match_then_finds_real_atom() {
+        let json = br#"{"attributedString":{"runs":["x"]}}"#;
+        let mut data = b"\xff\xff\xff\xfftsrp".to_vec();
+        data.extend_from_slice(&make_tsrp_atom(json));
+        assert_eq!(find_tsrp(&data).unwrap(), json);
     }
 
     // --- parse_tsrp ---

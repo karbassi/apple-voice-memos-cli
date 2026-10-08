@@ -21,7 +21,7 @@ use state::{load_state, save_state};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use tsrp::{find_tsrp, parse_tsrp};
+use tsrp::{find_transcript, parse_tsrp};
 use types::{ProcessedEntry, Recording};
 
 const DB_REL: &str =
@@ -160,13 +160,14 @@ fn get_recordings() -> Result<Vec<Recording>> {
         .and_then(|mut s| s.exists([]))
         .unwrap_or(false);
 
-    let has_zname = has_folder_table
-        && conn
-            .prepare("SELECT ZNAME FROM ZFOLDER LIMIT 0")
-            .is_ok();
+    let has_zname = has_folder_table && conn.prepare("SELECT ZNAME FROM ZFOLDER LIMIT 0").is_ok();
 
     let query = if has_folder_table {
-        let name_col = if has_zname { "f.ZNAME" } else { "f.ZENCRYPTEDNAME" };
+        let name_col = if has_zname {
+            "f.ZNAME"
+        } else {
+            "f.ZENCRYPTEDNAME"
+        };
         format!(
             "SELECT r.ZUNIQUEID, r.ZENCRYPTEDTITLE, r.ZPATH, r.ZDURATION, r.ZDATE, r.ZCUSTOMLABEL, \
              {name_col}, r.ZEVICTIONDATE \
@@ -220,13 +221,56 @@ fn get_recordings() -> Result<Vec<Recording>> {
         })
         .context("failed to query recordings")?;
 
-    Ok(rows.filter_map(|r| r.ok()).collect())
+    let mut recordings = Vec::new();
+    let mut bad_rows = 0usize;
+    for row in rows {
+        match row {
+            Ok(rec) => recordings.push(rec),
+            Err(_) => bad_rows += 1,
+        }
+    }
+    if bad_rows > 0 {
+        eprintln!(
+            "warning: skipped {bad_rows} recording row(s) the database couldn't map (e.g. no file path)"
+        );
+    }
+    Ok(recordings)
 }
 
-fn extract_transcript_tsrp(m4a_path: &Path) -> Option<String> {
-    let data = fs::read(m4a_path).ok()?;
-    let payload = find_tsrp(&data)?;
+fn extract_transcript_tsrp(audio_path: &Path) -> Option<String> {
+    let data = fs::read(audio_path).ok()?;
+    let payload = find_transcript(&data)?;
     parse_tsrp(payload)
+}
+
+fn is_qta(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("qta"))
+}
+
+/// .qta files carry a stereo AAC track plus an APAC spatial track that
+/// whisply/ffmpeg can't decode, so copy the AAC track out to a temp .m4a.
+fn qta_to_m4a(qta_path: &Path) -> Option<PathBuf> {
+    let stem = qta_path.file_stem()?.to_string_lossy().replace(' ', "_");
+    let out = std::env::temp_dir().join(format!("avm-{stem}.m4a"));
+    let status = Command::new("ffmpeg")
+        .args(["-v", "error", "-y", "-i"])
+        .arg(qta_path)
+        .args(["-map", "0:a:0", "-c", "copy"])
+        .arg(&out)
+        .status()
+        .ok()?;
+    status.success().then_some(out)
+}
+
+fn transcribe_audio(audio_path: &Path) -> Option<String> {
+    if !is_qta(audio_path) {
+        return transcribe_whisply(audio_path);
+    }
+    let m4a = qta_to_m4a(audio_path)?;
+    let transcript = transcribe_audio(&m4a);
+    let _ = fs::remove_file(&m4a);
+    transcript
 }
 
 fn transcribe_whisply(m4a_path: &Path) -> Option<String> {
@@ -248,10 +292,15 @@ fn transcribe_whisply(m4a_path: &Path) -> Option<String> {
 
     // Pass HF token for diarization support (pyannote models are gated)
     if let Ok(token_output) = Command::new("op")
-        .args(["read", "op://homelab/AI Assistant/HuggingFace/user_access_token"])
+        .args([
+            "read",
+            "op://homelab/AI Assistant/HuggingFace/user_access_token",
+        ])
         .output()
     {
-        let token = String::from_utf8_lossy(&token_output.stdout).trim().to_string();
+        let token = String::from_utf8_lossy(&token_output.stdout)
+            .trim()
+            .to_string();
         if token_output.status.success() && !token.is_empty() {
             args.push("--hf_token".to_string());
             args.push(token);
@@ -265,7 +314,12 @@ fn transcribe_whisply(m4a_path: &Path) -> Option<String> {
         .ok()?;
 
     // Clean up converted wav files whisply leaves in the source directory
-    let wav_name = m4a_path.file_stem().unwrap_or_default().to_string_lossy().to_string() + "_converted.wav";
+    let wav_name = m4a_path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string()
+        + "_converted.wav";
     let wav_path = m4a_path.parent().unwrap().join(&wav_name);
     let _ = fs::remove_file(&wav_path);
 
@@ -366,11 +420,15 @@ fn cmd_extract_dry_run(
             }
             let mut m4a = rdir.join(&rec.path);
             if !m4a.exists() {
-                let alt = rdir.join(rec.path.replace(' ', "_").replace('-', "_"));
-                if alt.exists() { m4a = alt; } else { return None; }
+                let alt = rdir.join(rec.path.replace([' ', '-'], "_"));
+                if alt.exists() {
+                    m4a = alt;
+                } else {
+                    return None;
+                }
             }
             let data = fs::read(&m4a).ok()?;
-            let has_tsrp = find_tsrp(&data).is_some();
+            let has_tsrp = find_transcript(&data).is_some();
             Some(DryRunEntry {
                 uuid: rec.uuid.clone(),
                 title: rec.title.clone(),
@@ -463,7 +521,7 @@ fn cmd_extract(
         let mut m4a = rdir.join(&rec.path);
         // DB path may differ from filesystem (spaces/dashes vs underscores)
         if !m4a.exists() {
-            let alt_name = rec.path.replace(' ', "_").replace('-', "_");
+            let alt_name = rec.path.replace([' ', '-'], "_");
             let alt = rdir.join(&alt_name);
             if alt.exists() {
                 m4a = alt;
@@ -482,7 +540,7 @@ fn cmd_extract(
         let mut method = "tsrp";
 
         if transcript.is_none() && all {
-            transcript = transcribe_whisply(&m4a);
+            transcript = transcribe_audio(&m4a);
             method = "whisply";
         }
 
