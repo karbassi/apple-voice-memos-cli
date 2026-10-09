@@ -55,7 +55,7 @@ fn qta_key_index(data: &[u8], start: usize, end: usize) -> Option<usize> {
         if size < 8 || pos + size > end {
             return None;
         }
-        if &data[pos + 8..pos + size] == QTA_TSRP_KEY {
+        if &data[pos + 4..pos + 8] == b"mdta" && &data[pos + 8..pos + size] == QTA_TSRP_KEY {
             return Some(i);
         }
         pos += size;
@@ -171,10 +171,14 @@ mod tests {
     }
 
     fn make_qta_meta(keys: &[&[u8]], tsrp_index: u32, json: &[u8]) -> Vec<u8> {
+        make_qta_meta_ns(b"mdta", keys, tsrp_index, json)
+    }
+
+    fn make_qta_meta_ns(ns: &[u8], keys: &[&[u8]], tsrp_index: u32, json: &[u8]) -> Vec<u8> {
         let mut kbody = vec![0u8; 4];
         kbody.extend_from_slice(&(keys.len() as u32).to_be_bytes());
         for k in keys {
-            kbody.extend_from_slice(&make_box(b"mdta", k));
+            kbody.extend_from_slice(&make_box(ns, k));
         }
         let mut dbody = vec![0, 0, 0, 1, 0, 0, 0, 0]; // type (UTF-8), locale
         dbody.extend_from_slice(json);
@@ -208,6 +212,12 @@ mod tests {
         let meta = make_qta_meta(&[QTA_TSRP_KEY], 1, json);
         assert!(find_tsrp(&meta).is_none());
         assert_eq!(find_transcript(&meta).unwrap(), json);
+    }
+
+    #[test]
+    fn find_qta_tsrp_requires_mdta_namespace() {
+        let meta = make_qta_meta_ns(b"udta", &[QTA_TSRP_KEY], 1, br#"{"x":1}"#);
+        assert!(find_qta_tsrp(&meta).is_none());
     }
 
     #[test]
