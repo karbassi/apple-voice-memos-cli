@@ -1,6 +1,12 @@
 [tools]
 rust = { version = "latest", components = "clippy,rustfmt" }
 
+# Command Line Tools ships a MacOSX27.0 SDK the linker rejects ("tapi error:
+# unknown architecture"). Pin 26.5 when it's installed; otherwise use the
+# default SDK (CI runners have Xcode, not this CLT path).
+[env]
+SDKROOT = "{{ exec(command='p=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk; [ -d $p ] && echo $p || xcrun --show-sdk-path') }}"
+
 [tasks.build]
 run = "cargo build"
 
