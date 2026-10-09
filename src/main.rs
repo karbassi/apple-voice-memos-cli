@@ -248,29 +248,35 @@ fn is_qta(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("qta"))
 }
 
+/// Private, randomly named scratch dir (removed on drop) plus the output path
+/// inside it. Nothing exists at the path yet, so it can't be a planted symlink.
+fn qta_scratch() -> Option<(tempfile::TempDir, PathBuf)> {
+    let dir = tempfile::Builder::new().prefix("avm-qta-").tempdir().ok()?;
+    let out = dir.path().join("audio.m4a");
+    Some((dir, out))
+}
+
 /// .qta files carry a stereo AAC track plus an APAC spatial track that
 /// whisply/ffmpeg can't decode, so copy the AAC track out to a temp .m4a.
-fn qta_to_m4a(qta_path: &Path) -> Option<PathBuf> {
-    let stem = qta_path.file_stem()?.to_string_lossy().replace(' ', "_");
-    let out = std::env::temp_dir().join(format!("avm-{stem}.m4a"));
+/// Keep the returned TempDir alive until the .m4a is no longer needed.
+fn qta_to_m4a(qta_path: &Path) -> Option<(tempfile::TempDir, PathBuf)> {
+    let (dir, out) = qta_scratch()?;
     let status = Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-i"])
+        .args(["-v", "error", "-n", "-i"])
         .arg(qta_path)
         .args(["-map", "0:a:0", "-c", "copy"])
         .arg(&out)
         .status()
         .ok()?;
-    status.success().then_some(out)
+    status.success().then_some((dir, out))
 }
 
 fn transcribe_audio(audio_path: &Path) -> Option<String> {
     if !is_qta(audio_path) {
         return transcribe_whisply(audio_path);
     }
-    let m4a = qta_to_m4a(audio_path)?;
-    let transcript = transcribe_audio(&m4a);
-    let _ = fs::remove_file(&m4a);
-    transcript
+    let (_scratch, m4a) = qta_to_m4a(audio_path)?;
+    transcribe_whisply(&m4a)
 }
 
 fn transcribe_whisply(m4a_path: &Path) -> Option<String> {
@@ -884,5 +890,29 @@ fn main() {
             eprintln!("error: {e:#}");
         }
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn qta_scratch_is_private_and_unique() {
+        let (a_dir, a) = qta_scratch().unwrap();
+        let (b_dir, b) = qta_scratch().unwrap();
+        assert_ne!(a_dir.path(), b_dir.path());
+        assert!(a.starts_with(a_dir.path()));
+        assert!(!a.exists() && !b.exists());
+        let path = a_dir.path().to_path_buf();
+        drop(a_dir);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn is_qta_matches_extension_case_insensitively() {
+        assert!(is_qta(Path::new("x/20261008 130132-1E919D4E.qta")));
+        assert!(is_qta(Path::new("x/a.QTA")));
+        assert!(!is_qta(Path::new("x/a.m4a")));
     }
 }
