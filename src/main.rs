@@ -262,13 +262,21 @@ fn qta_scratch() -> Option<(tempfile::TempDir, PathBuf)> {
 fn qta_to_m4a(qta_path: &Path) -> Option<(tempfile::TempDir, PathBuf)> {
     let (dir, out) = qta_scratch()?;
     let status = Command::new("ffmpeg")
-        .args(["-v", "error", "-n", "-i"])
-        .arg(qta_path)
-        .args(["-map", "0:a:0", "-c", "copy"])
-        .arg(&out)
-        .status()
-        .ok()?;
-    status.success().then_some((dir, out))
+        .args(ffmpeg_aac_args(qta_path, &out))
+        .output()
+        .ok()?
+        .status;
+    (status.success() && out.exists()).then_some((dir, out))
+}
+
+/// Copy the first audio stream (the stereo AAC fallback) without re-encoding;
+/// `-n` refuses to overwrite anything already at `out`.
+fn ffmpeg_aac_args(input: &Path, out: &Path) -> Vec<std::ffi::OsString> {
+    let mut args: Vec<std::ffi::OsString> = ["-v", "error", "-n", "-i"].map(Into::into).to_vec();
+    args.push(input.into());
+    args.extend(["-map", "0:a:0", "-c", "copy"].map(Into::into));
+    args.push(out.into());
+    args
 }
 
 fn transcribe_audio(audio_path: &Path) -> Option<String> {
@@ -907,6 +915,75 @@ mod tests {
         let path = a_dir.path().to_path_buf();
         drop(a_dir);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn ffmpeg_aac_args_copy_first_audio_stream_without_overwrite() {
+        let args = ffmpeg_aac_args(Path::new("in.qta"), Path::new("/x/audio.m4a"));
+        let args: Vec<_> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-v",
+                "error",
+                "-n",
+                "-i",
+                "in.qta",
+                "-map",
+                "0:a:0",
+                "-c",
+                "copy",
+                "/x/audio.m4a"
+            ]
+        );
+    }
+
+    #[test]
+    fn qta_to_m4a_none_for_unreadable_input() {
+        assert!(qta_to_m4a(Path::new("/nonexistent/recording.qta")).is_none());
+    }
+
+    fn have_ffmpeg() -> bool {
+        Command::new("ffmpeg")
+            .arg("-version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    #[test]
+    fn qta_to_m4a_extracts_audio_and_cleans_up() {
+        if !have_ffmpeg() {
+            eprintln!("skipping: ffmpeg not installed");
+            return;
+        }
+        let src_dir = tempfile::tempdir().unwrap();
+        let qta = src_dir.path().join("sample.qta");
+        let made = Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=duration=1",
+                "-c:a",
+                "aac",
+                "-f",
+                "mov",
+            ])
+            .arg(&qta)
+            .status()
+            .unwrap();
+        assert!(made.success());
+
+        let (scratch, m4a) = qta_to_m4a(&qta).unwrap();
+        assert!(m4a.starts_with(scratch.path()));
+        assert!(fs::metadata(&m4a).unwrap().len() > 0);
+        drop(scratch);
+        assert!(!m4a.exists());
     }
 
     #[test]
