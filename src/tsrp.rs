@@ -35,16 +35,43 @@ pub fn find_tsrp(data: &[u8]) -> Option<&[u8]> {
 }
 
 /// .qta (QuickTime Audio, iOS 26+ Voice Memos): the transcript is an `mdta`
-/// metadata item keyed `com.apple.VoiceMemos.tsrp`. Find the key's 1-based
-/// index in `keys`, then the `ilst` item with that index, then its `data`
-/// payload (after the 8-byte type + locale header).
+/// metadata item keyed `com.apple.VoiceMemos.tsrp`. Within one `meta` box,
+/// find the key's 1-based index in `keys`, then the sibling `ilst` item with
+/// that index, then its `data` payload (after the 8-byte type + locale header).
 pub fn find_qta_tsrp(data: &[u8]) -> Option<&[u8]> {
-    positions(data, b"keys").find_map(|idx| {
-        let (start, end) = box_at(data, idx, 16)?;
-        let key_index = qta_key_index(data, start, end)?;
-        let ilst_at = positions(&data[end..], b"ilst").next()? + end;
-        qta_ilst_payload(data, ilst_at, key_index)
+    positions(data, b"meta").find_map(|idx| {
+        let (start, end) = box_at(data, idx, 8)?;
+        let children = meta_children(data, start, end)?;
+        let child = |tag: &[u8]| children.iter().find(|(t, _, _)| t == tag);
+        let (_, kstart, kend) = child(b"keys")?;
+        let (_, istart, iend) = child(b"ilst")?;
+        let key_index = qta_key_index(data, *kstart, *kend)?;
+        qta_ilst_payload(data, *istart, *iend, key_index)
     })
+}
+
+type BoxSpan = ([u8; 4], usize, usize);
+
+/// Child boxes of a `meta` box as (type, start, end). QuickTime `meta` has no
+/// version/flags; ISO BMFF `meta` has 4 bytes of them. Accept either layout.
+fn meta_children(data: &[u8], start: usize, end: usize) -> Option<Vec<BoxSpan>> {
+    [start + 8, start + 12]
+        .into_iter()
+        .find_map(|first| child_boxes(data, first, end))
+}
+
+/// Boxes that exactly tile `pos..end`, or None if any size is invalid.
+fn child_boxes(data: &[u8], mut pos: usize, end: usize) -> Option<Vec<BoxSpan>> {
+    let mut out = Vec::new();
+    while pos < end {
+        let size = be32(data, pos)?;
+        if size < 8 || pos + size > end {
+            return None;
+        }
+        out.push((data[pos + 4..pos + 8].try_into().ok()?, pos, pos + size));
+        pos += size;
+    }
+    (pos == end && !out.is_empty()).then_some(out)
 }
 
 fn qta_key_index(data: &[u8], start: usize, end: usize) -> Option<usize> {
@@ -63,8 +90,7 @@ fn qta_key_index(data: &[u8], start: usize, end: usize) -> Option<usize> {
     None
 }
 
-fn qta_ilst_payload(data: &[u8], ilst_at: usize, key_index: usize) -> Option<&[u8]> {
-    let (start, end) = box_at(data, ilst_at, 8)?;
+fn qta_ilst_payload(data: &[u8], start: usize, end: usize, key_index: usize) -> Option<&[u8]> {
     let mut pos = start + 8;
     while pos + 8 <= end {
         let size = be32(data, pos)?;
@@ -189,9 +215,9 @@ mod tests {
         );
         let mut ilst = other;
         ilst.extend_from_slice(&item);
-        let mut meta = make_box(b"keys", &kbody);
-        meta.extend_from_slice(&make_box(b"ilst", &ilst));
-        meta
+        let mut children = make_box(b"keys", &kbody);
+        children.extend_from_slice(&make_box(b"ilst", &ilst));
+        make_box(b"meta", &children)
     }
 
     #[test]
@@ -218,6 +244,27 @@ mod tests {
     fn find_qta_tsrp_requires_mdta_namespace() {
         let meta = make_qta_meta_ns(b"udta", &[QTA_TSRP_KEY], 1, br#"{"x":1}"#);
         assert!(find_qta_tsrp(&meta).is_none());
+    }
+
+    #[test]
+    fn find_qta_tsrp_scopes_ilst_to_same_meta() {
+        // meta A defines the tsrp key but has no ilst; meta B has an
+        // unrelated item at the same index. Must not pair A's key with B's item.
+        let mut kbody = vec![0u8; 4];
+        kbody.extend_from_slice(&1u32.to_be_bytes());
+        kbody.extend_from_slice(&make_box(b"mdta", QTA_TSRP_KEY));
+        let meta_a = make_box(b"meta", &make_box(b"keys", &kbody));
+        let meta_b = make_qta_meta(&[b"com.apple.other"], 1, br#"{"junk":1}"#);
+        assert!(find_qta_tsrp(&[meta_a, meta_b].concat()).is_none());
+    }
+
+    #[test]
+    fn find_qta_tsrp_accepts_iso_meta_with_version_flags() {
+        let json = br#"{"attributedString":{"runs":["hi"]}}"#;
+        let qt = make_qta_meta(&[QTA_TSRP_KEY], 1, json);
+        let mut body = vec![0u8; 4]; // version + flags
+        body.extend_from_slice(&qt[8..]);
+        assert_eq!(find_qta_tsrp(&make_box(b"meta", &body)).unwrap(), json);
     }
 
     #[test]
